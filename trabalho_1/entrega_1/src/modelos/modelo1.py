@@ -22,9 +22,11 @@ def button_callback(channel):
     pedestrian_request = True
 
     if channel == M1_BUTTON_MAIN:
+
         log("[M1] Botão Pedestre Principal pressionado")
 
     elif channel == M1_BUTTON_CROSS:
+
         log("[M1] Botão Pedestre Cruzamento pressionado")
 
 # =========================
@@ -49,11 +51,11 @@ GPIO.add_event_detect(
 # LOOP PRINCIPAL
 # =========================
 
-def run():
+def run(stop_event):
 
     global pedestrian_request
 
-    while True:
+    while not stop_event.is_set():
 
         # =====================
         # VERDE
@@ -67,7 +69,7 @@ def run():
 
         start_time = time.time()
 
-        while True:
+        while not stop_event.is_set():
 
             elapsed = time.time() - start_time
 
@@ -87,6 +89,9 @@ def run():
 
             time.sleep(0.1)
 
+        if stop_event.is_set():
+            break
+
         # =====================
         # AMARELO
         # =====================
@@ -97,6 +102,9 @@ def run():
 
         time.sleep(M1_YELLOW_TIME)
 
+        if stop_event.is_set():
+            break
+
         # =====================
         # VERMELHO
         # =====================
@@ -106,3 +114,6 @@ def run():
         set_model1_state(1, 0, 0)
 
         time.sleep(M1_RED_TIME)
+
+        if stop_event.is_set():
+            break

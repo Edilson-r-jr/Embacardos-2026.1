@@ -1,4 +1,6 @@
 import time
+from datetime import datetime
+
 import RPi.GPIO as GPIO
 
 from constants import *
@@ -10,6 +12,16 @@ from gpio_controller import set_model2_state
 
 main_request = False
 cross_request = False
+
+# =========================
+# LOGGER
+# =========================
+
+def log(message):
+
+    current_time = datetime.now().strftime("%H:%M:%S")
+
+    print(f"[{current_time}] [M2] {message}")
 
 # =========================
 # CALLBACK DOS BOTÕES
@@ -24,13 +36,13 @@ def button_callback(channel):
 
         main_request = True
 
-        print("[M2] Botão Pedestre Principal pressionado")
+        log("Botão Pedestre Principal pressionado")
 
     elif channel == M2_BUTTON_CROSS:
 
         cross_request = True
 
-        print("[M2] Botão Pedestre Cruzamento pressionado")
+        log("Botão Pedestre Cruzamento pressionado")
 
 # =========================
 # INTERRUPÇÕES
@@ -54,19 +66,19 @@ GPIO.add_event_detect(
 # LOOP PRINCIPAL
 # =========================
 
-def run():
+def run(stop_event):
 
     global main_request
     global cross_request
 
-    while True:
+    while not stop_event.is_set():
 
         # ==================================================
         # ESTADO 1
         # Principal Verde / Cruzamento Vermelho
         # ==================================================
 
-        print("\n[M2] Estado 1")
+        log("Estado 1")
 
         set_model2_state(1)
 
@@ -74,32 +86,35 @@ def run():
 
         start_time = time.time()
 
-        while True:
+        while not stop_event.is_set():
 
             elapsed = time.time() - start_time
 
             # tempo máximo atingido
             if elapsed >= M2_MAIN_GREEN_MAX:
 
-                print("[M2] Tempo máximo principal atingido")
+                log("Tempo máximo principal atingido")
 
                 break
 
             # pedestre solicitou após mínimo
             if main_request and elapsed >= M2_MAIN_GREEN_MIN:
 
-                print("[M2] Mudança antecipada principal")
+                log("Mudança antecipada principal")
 
                 break
 
             time.sleep(0.1)
+
+        if stop_event.is_set():
+            break
 
         # ==================================================
         # ESTADO 2
         # Principal Amarelo
         # ==================================================
 
-        print("\n[M2] Estado 2")
+        log("Estado 2")
 
         set_model2_state(2)
 
@@ -110,7 +125,7 @@ def run():
         # Tudo Vermelho
         # ==================================================
 
-        print("\n[M2] Estado 4")
+        log("Estado 4")
 
         set_model2_state(4)
 
@@ -121,7 +136,7 @@ def run():
         # Cruzamento Verde
         # ==================================================
 
-        print("\n[M2] Estado 5")
+        log("Estado 5")
 
         set_model2_state(5)
 
@@ -129,32 +144,35 @@ def run():
 
         start_time = time.time()
 
-        while True:
+        while not stop_event.is_set():
 
             elapsed = time.time() - start_time
 
             # tempo máximo atingido
             if elapsed >= M2_CROSS_GREEN_MAX:
 
-                print("[M2] Tempo máximo cruzamento atingido")
+                log("Tempo máximo cruzamento atingido")
 
                 break
 
             # pedestre solicitou após mínimo
             if cross_request and elapsed >= M2_CROSS_GREEN_MIN:
 
-                print("[M2] Mudança antecipada cruzamento")
+                log("Mudança antecipada cruzamento")
 
                 break
 
             time.sleep(0.1)
+
+        if stop_event.is_set():
+            break
 
         # ==================================================
         # ESTADO 6
         # Cruzamento Amarelo
         # ==================================================
 
-        print("\n[M2] Estado 6")
+        log("Estado 6")
 
         set_model2_state(6)
 
@@ -165,7 +183,7 @@ def run():
         # Tudo Vermelho
         # ==================================================
 
-        print("\n[M2] Estado 4")
+        log("Estado 4")
 
         set_model2_state(4)
 
