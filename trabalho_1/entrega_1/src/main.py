@@ -1,4 +1,4 @@
-from modelos.modelo1 import run
+from modelos.modelo2 import run
 from gpio_controller import cleanup
 
 try:
