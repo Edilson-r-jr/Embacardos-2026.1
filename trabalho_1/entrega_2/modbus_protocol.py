@@ -1,3 +1,5 @@
+from urllib import response
+
 from uart_interface import send_packet, read_packet
 from utils import *
 from crc16 import append_crc
@@ -46,18 +48,20 @@ def solicitar_int_modbus():
 
     send_packet(packet)
 
-    response = read_packet(4)
+    response = read_packet(7)
 
     print_hex("RX", response)
 
-    if len(response) != 4:
+    if len(response) != 7:
         print("Timeout")
         return
 
     if check_modbus_error(response):
         return
 
-    value = unpack_int(response)
+    dados = response[3:7]
+
+    value = unpack_int(dados)
 
     print("Inteiro:", value)
 
@@ -80,18 +84,17 @@ def solicitar_float_modbus():
 
     send_packet(packet)
 
-    response = read_packet(4)
+    response = read_packet(7)
 
     print_hex("RX", response)
 
-    if len(response) != 4:
+    if len(response) != 7:
         print("Timeout")
         return
 
-    if check_modbus_error(response):
-        return
+    dados = response[3:7]
 
-    value = unpack_float(response)
+    value = unpack_float(dados)
 
     print("Float:", value)
 
@@ -118,18 +121,19 @@ def solicitar_string_modbus():
 
     print_hex("RX", response)
 
-    if len(response) == 0:
+    if len(response) < 4:
         print("Timeout")
         return
 
-    if check_modbus_error(response):
-        return
+    tamanho = response[3]
+
+    dados = response[4:4+tamanho]
 
     try:
-        texto = response.decode()
+        texto = dados.decode()
 
     except:
-        texto = response.decode(errors="ignore")
+        texto = dados.decode(errors="ignore")
 
     print("String:", texto)
 
@@ -156,18 +160,17 @@ def enviar_int_modbus(valor):
 
     send_packet(packet)
 
-    response = read_packet(4)
+    response = read_packet(7)
 
     print_hex("RX", response)
 
-    if len(response) != 4:
+    if len(response) != 7:
         print("Timeout")
         return
 
-    if check_modbus_error(response):
-        return
+    dados = response[3:7]
 
-    result = unpack_int(response)
+    result = unpack_int(dados)
 
     print("Resultado:", result)
 
@@ -194,18 +197,17 @@ def enviar_float_modbus(valor):
 
     send_packet(packet)
 
-    response = read_packet(4)
+    response = read_packet(7)
 
     print_hex("RX", response)
 
-    if len(response) != 4:
+    if len(response) != 7:
         print("Timeout")
         return
 
-    if check_modbus_error(response):
-        return
+    dados = response[3:7]
 
-    result = unpack_float(response)
+    result = unpack_float(dados)
 
     print("Resultado:", result)
 
@@ -239,17 +241,18 @@ def enviar_string_modbus(texto):
 
     print_hex("RX", response)
 
-    if len(response) == 0:
+    if len(response) < 4:
         print("Timeout")
         return
 
-    if check_modbus_error(response):
-        return
+    tamanho = response[3]
+
+    dados = response[4:4+tamanho]
 
     try:
-        texto = response.decode()
+        texto = dados.decode()
 
     except:
-        texto = response.decode(errors="ignore")
+        texto = dados.decode(errors="ignore")
 
-    print(texto)
+    print("String:", texto)
