@@ -1,6 +1,5 @@
 from uart_interface import send_packet, read_packet
 from utils import *
-import struct
 
 # =========================
 # SOLICITAÇÕES
@@ -127,7 +126,13 @@ def enviar_string(texto):
 
     send_packet(packet)
 
-    size = read_packet(1)[0]
+    size = read_packet(1)
+
+    if len(size) != 1:
+        print("Timeout")
+        return
+
+    size = size[0]
 
     response = read_packet(size)
 

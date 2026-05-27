@@ -81,3 +81,6 @@ while True:
         elif op == "6":
             texto = input("Texto: ")
             enviar_string_modbus(texto)
+
+    elif protocolo == "0":
+        break

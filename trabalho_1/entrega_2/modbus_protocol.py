@@ -1,5 +1,3 @@
-from urllib import response
-
 from uart_interface import send_packet, read_packet
 from utils import *
 from crc16 import append_crc
@@ -18,7 +16,7 @@ def check_modbus_error(response):
 
     if len(response) >= 3:
 
-        funcao = response[0]
+        funcao = response[1]
 
         if funcao & 0x80:
 
