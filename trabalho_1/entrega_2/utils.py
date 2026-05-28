@@ -1,6 +1,6 @@
 import struct
 
-MATRICULA = bytes([6,5,4,3,2,1])
+MATRICULA = bytes([0,2,4,7,9,3])
 
 def print_hex(label, data):
     print(f"{label}: {' '.join(f'{b:02X}' for b in data)}")
