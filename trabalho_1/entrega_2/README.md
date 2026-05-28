@@ -25,3 +25,7 @@ python3 main.py
 - uart_interface.py
 - crc16.py
 - utils.py
+
+## Print da matrícula em destaque no widget
+
+![Matrícula widget](/trabalho_1/entrega_2/matricula_widget.png)
