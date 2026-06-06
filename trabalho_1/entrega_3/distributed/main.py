@@ -1,15 +1,19 @@
 import json
 import sys
+import time
 
 from distributed.network.tcp_client import (
     TCPClient
+)
+
+from distributed.traffic.traffic_state_machine import (
+    TrafficStateMachine
 )
 
 
 def load_config(path):
 
     with open(path, "r") as file:
-
         return json.load(file)
 
 
@@ -18,8 +22,7 @@ def main():
     if len(sys.argv) != 2:
 
         print(
-            "Uso: python main.py "
-            "config.json"
+            "Uso: python -m distributed.main config.json"
         )
 
         return
@@ -31,16 +34,22 @@ def main():
     client = TCPClient(
         host=config["central_host"],
         port=config["central_port"],
-        intersection_id=config[
-            "intersection_id"
-        ]
+        intersection_id=config["intersection_id"]
     )
 
-    client.connect()
+    traffic = TrafficStateMachine(
+        config["intersection_id"]
+    )
 
-    client.send_heartbeat()
+    client.start()
+
+    time.sleep(2)
+
+    traffic.start()
+
+    while True:
+        time.sleep(1)
 
 
 if __name__ == "__main__":
-
     main()

@@ -16,7 +16,7 @@ def dashboard_loop(state_manager):
 
         print("\n" * 3)
 
-        print("=" * 50)
+        print("=" * 60)
 
         snapshot = (
             state_manager.get_snapshot()
@@ -35,7 +35,7 @@ def dashboard_loop(state_manager):
 
             status = (
                 "ONLINE"
-                if intersection.connected
+                if intersection.is_online()
                 else "OFFLINE"
             )
 
@@ -51,19 +51,32 @@ def dashboard_loop(state_manager):
             if heartbeat is None:
 
                 print(
-                    "Último heartbeat: nunca"
+                    "Heartbeat: nunca"
                 )
 
             else:
 
                 print(
-                    f"Último heartbeat: "
-                    f"{heartbeat}s"
+                    f"Heartbeat: {heartbeat}s"
                 )
 
-        print()
+            print(
+                f"Sensor 1: "
+                f"{intersection.vehicle_count[1]}"
+            )
 
-        print("=" * 50)
+            print(
+                f"Sensor 2: "
+                f"{intersection.vehicle_count[2]}"
+            )
+
+            print(
+                f"Infrações: "
+                f"{intersection.speed_violations}"
+            )
+
+        print()
+        print("=" * 60)
 
         time.sleep(2)
 

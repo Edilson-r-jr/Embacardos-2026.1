@@ -55,26 +55,52 @@ class TCPServer:
                 daemon=True
             ).start()
 
-    def handle_client(self, client_socket):
+    def handle_client(
+    self,
+    client_socket
+    ):
+
+        buffer = ""
 
         while True:
 
             try:
 
-                data = client_socket.recv(1024)
+                data = client_socket.recv(
+                    1024
+                )
 
                 if not data:
                     break
 
-                message = parse_message(
-                    data.decode()
-                )
+                buffer += data.decode()
 
-                self.state_manager.process_message(
-                    message
-                )
+                while "\n" in buffer:
 
-            except Exception:
+                    line, buffer = (
+                        buffer.split(
+                            "\n",
+                            1
+                        )
+                    )
+
+                    if not line:
+                        continue
+
+                    message = parse_message(
+                        line
+                    )
+
+                    self.state_manager.process_message(
+                        message
+                    )
+
+            except Exception as e:
+
+                print(
+                    "[CENTRAL] Erro:",
+                    e
+                )
 
                 break
 
