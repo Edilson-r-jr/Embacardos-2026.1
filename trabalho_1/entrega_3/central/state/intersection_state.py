@@ -11,17 +11,11 @@ class IntersectionState:
 
         self.last_heartbeat = None
 
-        self.vehicle_count = {
-            1: 0,
-            2: 0
-        }
+        self.vehicle_count = {}
 
         self.speed_violations = 0
 
-        self.last_speed = {
-            1: 0.0,
-            2: 0.0
-        }
+        self.last_speed = {}
 
     def heartbeat(self):
 

@@ -1,11 +1,13 @@
 import json
+from datetime import datetime
 
 
 def create_heartbeat(intersection_id: int):
 
     return json.dumps({
         "type": "heartbeat",
-        "intersection_id": intersection_id
+        "intersection_id": intersection_id,
+        "timestamp": datetime.now().isoformat()
     })
 
 
@@ -19,7 +21,8 @@ def create_vehicle_count(
         "type": "vehicle_count",
         "intersection_id": intersection_id,
         "sensor_id": sensor_id,
-        "count": count
+        "count": count,
+        "timestamp": datetime.now().isoformat()
     })
 
 
@@ -33,7 +36,8 @@ def create_speed_violation(
         "type": "speed_violation",
         "intersection_id": intersection_id,
         "sensor_id": sensor_id,
-        "speed": speed
+        "speed": speed,
+        "timestamp": datetime.now().isoformat()
     })
 
 

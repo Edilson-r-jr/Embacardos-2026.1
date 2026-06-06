@@ -1,0 +1,5 @@
+pyserial>=3.5
+# RPi.GPIO é requerido apenas para Raspberry Pi
+# Instalar com: sudo pip3 install RPi.GPIO
+# O sistema funciona em modo mock sem ele
+
