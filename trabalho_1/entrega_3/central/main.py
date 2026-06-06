@@ -254,7 +254,10 @@ class CentralManager:
                     
                     # Calcula fluxo de tráfego por sensor
                     if intersection.vehicle_count:
-                        for sensor_id, count in sorted(intersection.vehicle_count.items()):
+                        for sensor_id, count in sorted(
+                            intersection.vehicle_count.items(),
+                            key=lambda x: int(x[0])
+                        ):
                             print(f"  Sensor {sensor_id}: {count} veículos")
                     else:
                         print("  Nenhum dado de sensor disponível")
