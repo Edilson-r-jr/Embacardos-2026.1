@@ -1,0 +1,17 @@
+{
+  "night_mode": false,
+  "emergency_active": false,
+  "emergency_state": null,
+  "intersections": {
+    "1": {
+      "vehicle_count": {},
+      "speed_violations": 0,
+      "last_speed": {}
+    },
+    "2": {
+      "vehicle_count": {},
+      "speed_violations": 0,
+      "last_speed": {}
+    }
+  }
+}

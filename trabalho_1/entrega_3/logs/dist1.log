@@ -1,0 +1,54 @@
+[DIST] Modo: MOCK (não é RPi)
+[DIST 1] Inicializando...
+[GPIO] Usando mock (modo testes)
+[GPIO Mock] Pino 17 configurado como saída
+[TRAFFIC] Cruzamento 1, Bit 0 -> GPIO 17
+[GPIO Mock] Pino 18 configurado como saída
+[TRAFFIC] Cruzamento 1, Bit 1 -> GPIO 18
+[GPIO Mock] Pino 23 configurado como saída
+[TRAFFIC] Cruzamento 1, Bit 2 -> GPIO 23
+[GPIO] Usando mock (modo testes)
+[GPIO Mock] Pino 16 configurado como entrada
+[GPIO Mock] Pino 20 configurado como entrada
+[SENSOR] Sensor 1 - Pino A: 16, Pino B: 20
+[GPIO] Usando mock (modo testes)
+[GPIO Mock] Pino 21 configurado como entrada
+[GPIO Mock] Pino 27 configurado como entrada
+[SENSOR] Sensor 2 - Pino A: 21, Pino B: 27
+[DIST 1] Sensores de velocidade inicializados
+[GPIO] Usando mock (modo testes)
+[GPIO Mock] Pino 1 configurado como entrada
+[PED] Cruzamento 1 - Botão Principal: GPIO 1
+[GPIO Mock] Pino 12 configurado como entrada
+[PED] Cruzamento 1 - Botão Travessia: GPIO 12
+[DIST 1] Botões de pedestre inicializados
+[DIST 1] MAIN_GREEN (15s) - Código: 1
+[GPIO Mock] Pino 17 = 1
+[GPIO Mock] Pino 18 = 0
+[DIST 1] Sistema iniciado com sucesso[GPIO Mock] Pino 23 = 0
+
+[DIST 1] Conectado
+[DIST 1] MAIN_YELLOW (3s) - Código: 2
+[GPIO Mock] Pino 17 = 0
+[GPIO Mock] Pino 18 = 1
+[GPIO Mock] Pino 23 = 0
+[DIST 1] ALL_RED_1 (2s) - Código: 4
+[GPIO Mock] Pino 17 = 0
+[GPIO Mock] Pino 18 = 0
+[GPIO Mock] Pino 23 = 1
+[DIST 1] CROSS_GREEN (5s) - Código: 5
+[GPIO Mock] Pino 17 = 1
+[GPIO Mock] Pino 18 = 0
+[GPIO Mock] Pino 23 = 1
+[DIST 1] CROSS_YELLOW (3s) - Código: 6
+[GPIO Mock] Pino 17 = 0
+[GPIO Mock] Pino 18 = 1
+[GPIO Mock] Pino 23 = 1
+[DIST 1] ALL_RED_2 (2s) - Código: 4
+[GPIO Mock] Pino 17 = 0
+[GPIO Mock] Pino 18 = 0
+[GPIO Mock] Pino 23 = 1
+[DIST 1] MAIN_GREEN (15s) - Código: 1
+[GPIO Mock] Pino 17 = 1
+[GPIO Mock] Pino 18 = 0
+[GPIO Mock] Pino 23 = 0
