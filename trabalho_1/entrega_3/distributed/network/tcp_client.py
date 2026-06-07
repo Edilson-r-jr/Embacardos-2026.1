@@ -201,7 +201,7 @@ class TCPClient(threading.Thread):
 
                     if self.speed_sensors:
                         for sensor_id, sensor in self.speed_sensors.items():
-                            count = sensor.pop_vehicle_count()
+                            count = sensor.get_vehicle_count()
                             if count > 0:
                                 self.send_message(
                                     create_vehicle_count(

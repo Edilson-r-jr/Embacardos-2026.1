@@ -31,19 +31,11 @@ class IntersectionState:
             self.last_heartbeat
         ) < self.HEARTBEAT_TIMEOUT
 
-    def update_vehicle_count(
-        self,
-        sensor_id,
-        count
-    ):
+    def update_vehicle_count(self, sensor_id, count):
+        self.vehicle_count[int(sensor_id)] = count
 
-        self.vehicle_count[sensor_id] = count
-
-    def register_violation(
-        self,
-        sensor_id,
-        speed
-    ):
+    def register_violation(self, sensor_id, speed):
+        sensor_id = int(sensor_id)
 
         self.speed_violations += 1
         self.last_speed[sensor_id] = speed

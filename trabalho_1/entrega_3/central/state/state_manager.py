@@ -44,11 +44,26 @@ class StateManager:
                 intersections = data.get("intersections", {})
                 for intersection_id, intersection_data in intersections.items():
                     intersection_id = int(intersection_id)
+
                     if intersection_id in self.intersections:
                         intersection = self.intersections[intersection_id]
-                        intersection.vehicle_count = intersection_data.get("vehicle_count", intersection.vehicle_count)
-                        intersection.speed_violations = intersection_data.get("speed_violations", intersection.speed_violations)
-                        intersection.last_speed = intersection_data.get("last_speed", intersection.last_speed)
+
+                        saved_counts = intersection_data.get("vehicle_count", {})
+                        intersection.vehicle_count = {
+                            int(sensor_id): count
+                            for sensor_id, count in saved_counts.items()
+                        }
+
+                        intersection.speed_violations = intersection_data.get(
+                            "speed_violations",
+                            intersection.speed_violations
+                        )
+
+                        saved_speeds = intersection_data.get("last_speed", {})
+                        intersection.last_speed = {
+                            int(sensor_id): speed
+                            for sensor_id, speed in saved_speeds.items()
+                        }
         except Exception as error:
             print(f"[STATE] Falha ao carregar estado persistente: {error}")
 
@@ -106,6 +121,7 @@ class StateManager:
                     message["sensor_id"],
                     message["count"]
                 )
+                print(intersection.vehicle_count)
 
             elif msg_type == "speed_violation":
 
