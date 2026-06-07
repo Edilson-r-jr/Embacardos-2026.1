@@ -138,35 +138,25 @@ class CentralManager:
             )
     
     def handle_emergency(self, emergency_state):
-        """Processa mudanças de estado de emergência"""
         if not emergency_state:
             return
-        
+
         active = emergency_state['active']
-        
-        # Se emergência foi ativada
-        if active and not self.last_emergency_state:
-            print(f"[EMERGENCY] Emergência ativada!")
-            print(f"  - Road: {emergency_state['road']} (1=main, 2=cross)")
-            print(f"  - Direction: {emergency_state['direction']}")
-            print(f"  - Intersection: {emergency_state['intersection_id']}")
-            print(f"  - Signal Group: {emergency_state['signal_group']}")
-            self.emergency_command_sent = {}
-            self.state_manager.set_emergency_state(emergency_state)
-            self.state_manager.set_emergency_active(True)
-            
-        # Se emergência foi desativada
-        elif not active and self.last_emergency_state:
-            print(f"[EMERGENCY] Emergência finalizada")
-            self.emergency_command_sent = {}
-            self.state_manager.set_emergency_state(emergency_state)
-            self.state_manager.set_emergency_active(False)
-        
-        # Envia comandos para cruzamentos afetados
+
+        # Emergência ativada
         if active:
             self.send_emergency_command(emergency_state)
-        
-        self.last_emergency_state = active
+            self.state_manager.set_emergency_active(True)
+            self.state_manager.set_emergency_state(emergency_state)
+            self.last_emergency_state = True
+
+        # Emergência finalizada
+        else:
+            print("[EMERGENCY] Emergência finalizada")
+
+            self.state_manager.set_emergency_active(False)
+            self.state_manager.set_emergency_state(emergency_state)
+            self.last_emergency_state = False
     
     def send_emergency_command(self, emergency_state):
         """Envia comando de emergência para cruzamentos"""
@@ -194,22 +184,21 @@ class CentralManager:
                 self.server.send_command_to_intersection(inter_id, command)
     
     def handle_night_mode(self, emergency_state):
-        """Processa mudanças de modo noturno"""
         if not emergency_state:
             return
-        
-        night_mode = emergency_state.get('night_mode', 0)
-        
+
+        night_mode = bool(emergency_state.get('night_mode', 0))
+
         if night_mode != self.night_mode_active:
-            self.night_mode_active = bool(night_mode)
-            self.state_manager.set_night_mode(self.night_mode_active)
-            print(f"[NIGHT MODE] {'Ativado' if self.night_mode_active else 'Desativado'}")
-            
-            # Envia comando para ambos os cruzamentos
+            self.night_mode_active = night_mode
+            self.state_manager.set_night_mode(night_mode)
+
+            print(f"[NIGHT MODE] {'Ativado' if night_mode else 'Desativado'}")
+
             if self.server:
                 command = {
                     "type": "night_mode",
-                    "enabled": self.night_mode_active
+                    "enabled": night_mode
                 }
                 self.server.send_command_to_intersection(1, command)
                 self.server.send_command_to_intersection(2, command)

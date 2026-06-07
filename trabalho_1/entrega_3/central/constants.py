@@ -34,3 +34,6 @@ TRAFFIC_STATES = {
 
 # Modo noturno: alterna entre estado 0 (amarelo) e 4 (vermelho)
 NIGHT_MODE_CYCLE_TIME = 1.0  # 1 segundo em cada estado
+
+
+MATRICULA = bytes([0,2,4,7,9,3])

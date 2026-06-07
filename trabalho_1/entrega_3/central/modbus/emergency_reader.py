@@ -1,6 +1,7 @@
 import threading
 import time
 from central.modbus.bus_manager import ModbusBusManager
+from central.constants import MATRICULA
 
 
 class EmergencyReader:
@@ -31,6 +32,8 @@ class EmergencyReader:
             try:
                 state = self.read()
                 if state:
+                    print("[RAW STATE]", state)
+                    
                     with self.lock:
                         self.state = state
             except Exception as e:
@@ -42,33 +45,41 @@ class EmergencyReader:
         DEVICE = 0x20
         FUNC = 0x03
         START = 0x0000
-        QTD = 0x000B
+        QTD = 0x0000
 
         packet = bytes([
-            DEVICE,
-            FUNC,
-            (START >> 8) & 0xFF,
-            START & 0xFF,
-            (QTD >> 8) & 0xFF,
-            QTD & 0xFF
-        ])
+            0x20,        # addr
+            0x03,        # func
+            0x00, 0x00,  # start
+            0x0B, 0x00   # qty
+        ]) + MATRICULA
 
         # 3 + (11*2) + 2 = 27 bytes
         response = self.bus.request(packet, 27)
 
+        print("RAW RESPONSE:", [f"{b:02X}" for b in response])
+
         if not response:
             return None
 
+        regs = []
+
+        for i in range(11):
+            pos = 3 + i * 2
+            regs.append((response[pos] << 8) | response[pos + 1])
+
+        print("REGS:", regs)
+
         return {
-            'active': response[3],
-            'road': response[5],
-            'direction': response[7],
-            'intersection_id': response[9],
-            'vehicle_type': response[11],
-            'signal_group': response[13],
-            'timed_out': response[15],
-            'unattended_count': response[17],
-            'elapsed_s_x10': response[19],
-            'max_time_s_x10': response[21],
-            'night_mode': response[23],
+            'active': regs[0],
+            'road': regs[1],
+            'direction': regs[2],
+            'intersection_id': regs[3],
+            'vehicle_type': regs[4],
+            'signal_group': regs[5],
+            'timed_out': regs[6],
+            'unattended_count': regs[7],
+            'elapsed_s_x10': regs[8],
+            'max_time_s_x10': regs[9],
+            'night_mode': regs[10],
         }

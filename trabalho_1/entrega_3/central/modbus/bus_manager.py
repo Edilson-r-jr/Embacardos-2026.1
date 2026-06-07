@@ -34,7 +34,7 @@ class ModbusBusManager:
         Envia request e lê resposta de forma segura
         """
 
-        with self.lock:  # 🔥 GARANTE EXCLUSÃO TOTAL
+        with self.lock:
 
             # limpa lixo antigo
             self.uart.ser.reset_input_buffer()
