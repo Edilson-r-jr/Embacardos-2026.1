@@ -121,7 +121,6 @@ class StateManager:
                     message["sensor_id"],
                     message["count"]
                 )
-                print(intersection.vehicle_count)
 
             elif msg_type == "speed_violation":
 

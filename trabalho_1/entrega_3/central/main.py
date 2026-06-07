@@ -96,9 +96,14 @@ class CentralManager:
         print("[CENTRAL] Sistema iniciado")
     
     def handle_speed_violation(self, intersection_id, sensor_id, speed_kmh):
-        """Processa violação de velocidade"""
-        print(f"[CENTRAL] Infração: Cruzamento {intersection_id}, "
-              f"Sensor {sensor_id}, Velocidade {speed_kmh:.1f} km/h")
+        timestamp = datetime.now().strftime("%H:%M:%S")
+        print(
+            f"[{timestamp}] "
+            f"[PUSH] Infração recebida | "
+            f"Cruzamento={intersection_id} "
+            f"Sensor={sensor_id} "
+            f"Velocidade={speed_kmh:.1f} km/h"
+        )
         
         # Dispara câmera LPR correspondente
         if sensor_id in SENSOR_TO_CAMERA:
