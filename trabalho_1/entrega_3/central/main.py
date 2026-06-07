@@ -141,22 +141,27 @@ class CentralManager:
         if not emergency_state:
             return
 
-        active = emergency_state['active']
+        active = bool(emergency_state["active"])
 
-        # Emergência ativada
-        if active:
+        # Emergência iniciou
+        if active and not self.last_emergency_state:
+            print("[EMERGENCY] Emergência ativada")
             self.send_emergency_command(emergency_state)
             self.state_manager.set_emergency_active(True)
             self.state_manager.set_emergency_state(emergency_state)
             self.last_emergency_state = True
 
-        # Emergência finalizada
-        else:
+        # Emergência terminou
+        elif not active and self.last_emergency_state:
             print("[EMERGENCY] Emergência finalizada")
-
+            self.clear_emergency_command()
             self.state_manager.set_emergency_active(False)
             self.state_manager.set_emergency_state(emergency_state)
             self.last_emergency_state = False
+
+        # Permanece ativa: apenas atualiza o último payload
+        elif active:
+            self.state_manager.set_emergency_state(emergency_state)
     
     def send_emergency_command(self, emergency_state):
         """Envia comando de emergência para cruzamentos"""
@@ -280,7 +285,21 @@ class CentralManager:
             except Exception as e:
                 print(f"[CENTRAL] Erro no dashboard: {e}")
                 time.sleep(2)
-    
+    def clear_emergency_command(self): #clear_emergency_command encerrar o modo de emergência em todos os cruzamentos"""
+        if not self.server:
+            return
+
+        command = {
+            "type": "emergency",
+            "active": False,
+            "road": 0,
+            "signal_group": 0
+        }
+
+        # Envia para ambos para garantir limpeza do estado
+        self.server.send_command_to_intersection(1, command)
+        self.server.send_command_to_intersection(2, command)
+
     def run(self):
         """Executa o sistema central"""
         self.initialize()
