@@ -46,7 +46,7 @@ class LPRCamera:
 
         placa = placa.replace("\x00", "")
         conf = self._read_register(6)
-
+        print(f"[LPR CAMERA] read registers: {regs}, placa='{placa}', conf={conf}")
         self._write_register(1, 0)
 
         return placa, conf
@@ -55,20 +55,21 @@ class LPRCamera:
     # MODBUS WRITE (trigger)
     # -----------------------------
     def _write_register(self, offset, value):
-
-        payload = bytes([
+        print("[DEBUG] WRITE ENTER")
+        #little endian: high byte first, low byte second
+        packet = bytes([
             self.address,
             0x10,
-            0x00, offset,
-            0x00, 0x01,
+            offset, 0x00,
+            0x01, 0x00,
             0x02,
-            (value >> 8) & 0xFF,
-            value & 0xFF
-        ])
-
-        packet = payload + self.matricula
+            value, 0x00   # value = 1
+        ]) + MATRICULA
 
         resp = self.bus.request(packet, 8)
+
+        print("[DEBUG] WRITE RESP =", resp)
+        
         return resp is not None
 
     # -----------------------------
@@ -82,23 +83,23 @@ class LPRCamera:
     # MODBUS READ multiple registers
     # -----------------------------
     def _read_multiple_registers(self, offset, count):
-
+        #Little endian: high byte first, low byte second     
         payload = bytes([
-            self.address,
-            0x03,
-            0x00, offset,
-            0x00, count
-        ])
+        self.address,
+        0x03,
+        offset, 0x00,
+        count, 0x00
+                    ])
 
         packet = payload + self.matricula
 
-        resp = self.bus.request(packet, 5 + count * 2 + 2)
+        resp = self.bus.request(packet, 5 + count * 2)
 
         if not resp:
             return None
 
         registers = []
         for i in range(count):
-            registers.append((resp[3 + i*2] << 8) | resp[4 + i*2])
+            registers.append((resp[3 + i*2] << 8) | resp[(3 + i*2) + 1] )
 
         return registers

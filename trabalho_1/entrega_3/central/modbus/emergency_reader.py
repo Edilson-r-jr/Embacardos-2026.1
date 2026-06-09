@@ -32,7 +32,7 @@ class EmergencyReader:
             try:
                 state = self.read()
                 if state:
-                    print("[RAW STATE]", state)
+                    #print("[RAW STATE]", state)
                     
                     with self.lock:
                         self.state = state
@@ -57,7 +57,7 @@ class EmergencyReader:
         # 3 + (11*2) + 2 = 27 bytes
         response = self.bus.request(packet, 27)
 
-        print("RAW RESPONSE:", [f"{b:02X}" for b in response])
+        #print("RAW RESPONSE:", [f"{b:02X}" for b in response])
 
         if not response:
             return None

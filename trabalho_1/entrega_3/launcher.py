@@ -1,202 +1,365 @@
 import subprocess
 import sys
+import os
+import time
+import threading
+from collections import deque
+from datetime import datetime
+
+from rich.console import Console
+from rich.layout import Layout
+from rich.panel import Panel
+from rich.table import Table
+from rich.text import Text
+from rich.live import Live
+from rich.columns import Columns
+from rich import box
+from rich.style import Style
+import rich.spinner
+
+
+# ──────────────────────────────────────────────
+# Configuração
+# ──────────────────────────────────────────────
 
 LOG_FILES = {
     "central": "logs/central.log",
-    "dist1": "logs/dist1.log",
-    "dist2": "logs/dist2.log",
+    "dist1":   "logs/dist1.log",
+    "dist2":   "logs/dist2.log",
 }
 
-processes = {}
-log_handles = {}
+LOG_COLORS = {
+    "[CENTRAL]": "bold cyan",
+    "[TCP]":     "cyan",
+    "[DIST 1]":  "bold green",
+    "[DIST 2]":  "bold blue",
+    "[PUSH]":    "bold yellow",
+    "[LPR]":     "yellow",
+    "[EMERGENCY]": "bold red",
+    "[NIGHT":    "magenta",
+    "[MODBUS]":  "white",
+    "[ERROR]":   "bold red",
+}
 
+MAX_LOG_LINES   = 200   # buffer máximo por processo
+VISIBLE_LINES   = 22    # linhas exibidas no painel de log
+REFRESH_RATE    = 0.25  # segundos entre re-renders
+
+console = Console()
+
+
+# ──────────────────────────────────────────────
+# Estado global
+# ──────────────────────────────────────────────
+
+processes:    dict[str, subprocess.Popen]  = {}
+log_handles:  dict[str, object]            = {}
+log_buffers:  dict[str, deque]             = {k: deque(maxlen=MAX_LOG_LINES) for k in LOG_FILES}
+tail_threads: dict[str, threading.Thread]  = {}
+start_times:  dict[str, float]             = {}
+
+active_tab    = "central"   # aba de log visível
+status_msg    = ""          # mensagem de status na barra inferior
+lock          = threading.Lock()
+
+
+# ──────────────────────────────────────────────
+# Helpers de processo
+# ──────────────────────────────────────────────
+
+def _ensure_log_dir():
+    os.makedirs("logs", exist_ok=True)
+
+
+def _tail_log(name: str, path: str):
+    """Lê linhas novas do arquivo de log e empurra para o buffer."""
+    try:
+        with open(path, "r", encoding="utf-8", errors="replace") as f:
+            # avança até o fim (evita re-ler log anterior)
+            f.seek(0, 2)
+            while name in processes:
+                line = f.readline()
+                if line:
+                    ts = datetime.now().strftime("%H:%M:%S")
+                    with lock:
+                        log_buffers[name].append((ts, line.rstrip()))
+                else:
+                    time.sleep(0.05)
+    except Exception:
+        pass
+
+
+def _start(name: str, cmd: list[str]):
+    if name in processes:
+        _set_status(f"{name} já está rodando")
+        return
+    _ensure_log_dir()
+    path = LOG_FILES[name]
+    log_handles[name] = open(path, "w", encoding="utf-8")
+    processes[name]   = subprocess.Popen(
+        cmd,
+        stdout=log_handles[name],
+        stderr=subprocess.STDOUT,
+    )
+    start_times[name] = time.time()
+    t = threading.Thread(target=_tail_log, args=(name, path), daemon=True)
+    t.start()
+    tail_threads[name] = t
+    _set_status(f"{name} iniciado (PID {processes[name].pid})")
+
+
+def _stop(name: str):
+    if name not in processes:
+        _set_status(f"{name} não está rodando")
+        return
+    processes[name].terminate()
+    try:
+        processes[name].wait(timeout=3)
+    except subprocess.TimeoutExpired:
+        processes[name].kill()
+    processes.pop(name)
+    log_handles[name].close()
+    log_handles.pop(name)
+    start_times.pop(name, None)
+    _set_status(f"{name} encerrado")
+
+
+def _set_status(msg: str):
+    global status_msg
+    status_msg = msg
+
+
+# ──────────────────────────────────────────────
+# Ações de menu
+# ──────────────────────────────────────────────
 
 def start_central():
-    if "central" in processes:
-        print("[LAUNCHER] Central já está rodando.")
-        return
-
-    print("[LAUNCHER] Iniciando CENTRAL em background...")
-
-    log_handles["central"] = open(LOG_FILES["central"], "w")
-
-    processes["central"] = subprocess.Popen(
-        [sys.executable, "-u", "-m", "central.main"],
-        stdout=log_handles["central"],
-        stderr=subprocess.STDOUT
-    )
-
+    _start("central", [sys.executable, "-u", "-m", "central.main"])
 
 def start_dist1():
-    if "dist1" in processes:
-        print("[LAUNCHER] Distribuído 1 já está rodando.")
-        return
-    
-    print("[LAUNCHER] Iniciando DISTRIBUÍDO 1 em background...")
-
-    log_handles["dist1"] = open(LOG_FILES["dist1"], "w")
-
-    processes["dist1"] = subprocess.Popen(
-        [sys.executable, "-u", "-m", "distributed.main", "config/intersection1.json"],
-        stdout=log_handles["dist1"],
-        stderr=subprocess.STDOUT
-    )
-
+    _start("dist1", [sys.executable, "-u", "-m", "distributed.main", "config/intersection1.json"])
 
 def start_dist2():
-    if "dist2" in processes:
-        print("[LAUNCHER] Distribuído 2 já está rodando.")
-        return
+    _start("dist2", [sys.executable, "-u", "-m", "distributed.main", "config/intersection2.json"])
 
-    print("[LAUNCHER] Iniciando DISTRIBUÍDO 2 em background...")
+def start_all():
+    start_central(); start_dist1(); start_dist2()
+    _set_status("todos os processos iniciados")
 
-    log_handles["dist2"] = open(LOG_FILES["dist2"], "w")
+def stop_all():
+    for name in list(processes):
+        _stop(name)
+    _set_status("todos os processos encerrados")
 
-    processes["dist2"] = subprocess.Popen(
-        [sys.executable, "-u", "-m", "distributed.main", "config/intersection2.json"],
-        stdout=log_handles["dist2"],
-        stderr=subprocess.STDOUT
+
+# ──────────────────────────────────────────────
+# Renderização Rich
+# ──────────────────────────────────────────────
+
+def _status_dot(name: str) -> Text:
+    proc = processes.get(name)
+    if proc is None:
+        return Text("● offline", style="dim red")
+    if proc.poll() is not None:
+        return Text("● encerrado", style="bold red")
+    return Text("● online", style="bold green")
+
+
+def _uptime(name: str) -> str:
+    t = start_times.get(name)
+    if t is None:
+        return "—"
+    s = int(time.time() - t)
+    return f"{s//3600:02d}:{(s%3600)//60:02d}:{s%60:02d}"
+
+
+def _colorize_line(ts: str, raw: str) -> Text:
+    t = Text()
+    t.append(ts + " ", style="dim")
+    color = "white"
+    for tag, c in LOG_COLORS.items():
+        if tag in raw:
+            color = c
+            break
+    t.append(raw, style=color)
+    return t
+
+
+def _build_status_panel() -> Panel:
+    grid = Table.grid(expand=True, padding=(0, 2))
+    grid.add_column(ratio=1)
+    grid.add_column(ratio=1)
+    grid.add_column(ratio=1)
+
+    def proc_cell(name: str, label: str) -> Text:
+        t = Text()
+        t.append(f"{label}\n", style="bold")
+        t.append(_status_dot(name))
+        t.append(f"  uptime: {_uptime(name)}", style="dim")
+        return t
+
+    grid.add_row(
+        proc_cell("central", "Central"),
+        proc_cell("dist1",   "Distribuído 1"),
+        proc_cell("dist2",   "Distribuído 2"),
+    )
+    return Panel(grid, title="[bold]Status dos processos[/]", border_style="bright_black", box=box.ROUNDED)
+
+
+def _build_log_panel() -> Panel:
+    # cabeçalho das abas
+    tabs_text = Text()
+    for key, label in [("central", "Central"), ("dist1", "Dist-1"), ("dist2", "Dist-2")]:
+        if key == active_tab:
+            tabs_text.append(f" {label} ", style="bold black on cyan")
+        else:
+            tabs_text.append(f" {label} ", style="dim")
+        tabs_text.append("  ")
+
+    with lock:
+        lines = list(log_buffers[active_tab])[-VISIBLE_LINES:]
+
+    log_text = Text()
+    for ts, raw in lines:
+        log_text.append_text(_colorize_line(ts, raw))
+        log_text.append("\n")
+
+    # preenche linhas vazias para manter altura fixa
+    missing = VISIBLE_LINES - len(lines)
+    log_text.append("\n" * missing)
+
+    return Panel(
+        log_text,
+        title=tabs_text,
+        subtitle=Text(f"  últimas {VISIBLE_LINES} linhas  ", style="dim"),
+        border_style="bright_black",
+        box=box.ROUNDED,
     )
 
 
-def stop_central():
-    if "central" in processes:
-        print("[LAUNCHER] Parando CENTRAL...")
+def _build_controls_panel() -> Panel:
+    t = Table.grid(padding=(0, 1))
+    t.add_column(style="bold cyan", min_width=4)
+    t.add_column()
 
-        processes["central"].terminate()
-        processes.pop("central")
+    rows = [
+        ("[1]", "[green]▶[/] iniciar Central"),
+        ("[2]", "[green]▶[/] iniciar Dist-1"),
+        ("[3]", "[green]▶[/] iniciar Dist-2"),
+        ("[A]", "[green]▶[/] iniciar tudo"),
+        ("",    ""),
+        ("[Q]", "[red]■[/] parar Central"),
+        ("[W]", "[red]■[/] parar Dist-1"),
+        ("[E]", "[red]■[/] parar Dist-2"),
+        ("[S]", "[red]■[/] parar tudo"),
+        ("",    ""),
+        ("[Tab]","trocar aba de log"),
+        ("[0]", "[bold red]sair[/]"),
+    ]
+    for key, desc in rows:
+        t.add_row(key, desc)
 
-        log_handles["central"].close()
-        log_handles.pop("central")
+    return Panel(t, title="[bold]Controles[/]", border_style="bright_black", box=box.ROUNDED)
 
+
+def _build_bottom_bar() -> Text:
+    now = datetime.now().strftime("%H:%M:%S")
+    t = Text()
+    t.append(f" {now} ", style="bold")
+    t.append("│ ", style="dim")
+    if status_msg:
+        t.append(status_msg, style="yellow")
     else:
-        print("[LAUNCHER] Central não está rodando.")
+        t.append("aguardando comando...", style="dim")
+    return t
 
 
-def stop_dist1():
-    if "dist1" in processes:
-        print("[LAUNCHER] Parando DISTRIBUÍDO 1...")
-
-        processes["dist1"].terminate()
-        processes.pop("dist1")
-
-        log_handles["dist1"].close()
-        log_handles.pop("dist1")
-
-    else:
-        print("[LAUNCHER] Distribuído 1 não está rodando.")
-
-
-def stop_dist2():
-    if "dist2" in processes:
-        print("[LAUNCHER] Parando DISTRIBUÍDO 2...")
-        processes["dist2"].terminate()
-        processes.pop("dist2")
-        
-        log_handles["dist2"].close()
-        log_handles.pop("dist2")
-    else:
-        print("[LAUNCHER] Distribuído 2 não está rodando.")
+def _build_layout() -> Layout:
+    layout = Layout()
+    layout.split_column(
+        Layout(name="top",    size=7),
+        Layout(name="middle", ratio=1),
+        Layout(name="bottom", size=1),
+    )
+    layout["middle"].split_row(
+        Layout(name="logs",     ratio=3),
+        Layout(name="controls", ratio=1),
+    )
+    layout["top"].update(_build_status_panel())
+    layout["logs"].update(_build_log_panel())
+    layout["controls"].update(_build_controls_panel())
+    layout["bottom"].update(_build_bottom_bar())
+    return layout
 
 
-def stop_all():
-    print("[LAUNCHER] Encerrando processos...")
+# ──────────────────────────────────────────────
+# Loop principal (input não-bloqueante)
+# ──────────────────────────────────────────────
 
-    for name, proc in processes.items():
-        print(f" - Parando {name}")
-        proc.terminate()
-
-    processes.clear()
-
-def show_logs(name):
-    try:
-        with open(LOG_FILES[name], "r") as f:
-            lines = f.readlines()[-30:]  # últimas 30 linhas
-
-        print("\n" + "=" * 50)
-        print(f"LOGS - {name}")
-        print("=" * 50)
-
-        for line in lines:
-            print(line.strip())
-
-    except FileNotFoundError:
-        print("[LAUNCHER] Nenhum log encontrado ainda.")
+def _switch_tab():
+    global active_tab
+    tabs = ["central", "dist1", "dist2"]
+    idx = tabs.index(active_tab)
+    active_tab = tabs[(idx + 1) % len(tabs)]
+    _set_status(f"aba: {active_tab}")
 
 
-def menu():
-    while True:
-        print("\n" + "=" * 45)
-        print("        SISTEMA DE TRÁFEGO - LAUNCHER")
-        print("=" * 45)
-        print("1 - Iniciar Central")
-        print("2 - Iniciar Distribuído 1")
-        print("3 - Iniciar Distribuído 2")
-        print("4 - Iniciar tudo")
-        print("5 - Ver processos ativos")
-        print("6 - Encerrar Central")
-        print("7 - Encerrar Distribuído 1")
-        print("8 - Encerrar Distribuído 2")
-        print("9 - Ver logs Central")
-        print("10 - Ver logs Distribuído 1")
-        print("11 - Ver logs Distribuído 2")
-        print("12 - Encerrar tudo")
-        print("0 - Sair")
-        print("=" * 45)
+def _handle_key(key: str) -> bool:
+    """Retorna False para sair."""
+    key = key.strip().lower()
+    if key == "1":   start_central()
+    elif key == "2": start_dist1()
+    elif key == "3": start_dist2()
+    elif key == "a": start_all()
+    elif key == "q": _stop("central")
+    elif key == "w": _stop("dist1")
+    elif key == "e": _stop("dist2")
+    elif key == "s": stop_all()
+    elif key == "\t": _switch_tab()   # Tab
+    elif key == "0":
+        stop_all()
+        return False
+    return True
 
-        choice = input("Escolha: ")
 
-        if choice == "1":
-            start_central()
-
-        elif choice == "2":
-            start_dist1()
-
-        elif choice == "3":
-            start_dist2()
-
-        elif choice == "4":
-            start_central()
-            start_dist1()
-            start_dist2()
-
-        elif choice == "5":
-            print("\n[ATIVOS]")
-            for k in processes:
-                print(f" - {k}")
-
-        elif choice == "6":
-            stop_central()
-
-        elif choice == "7":
-            stop_dist1()
-
-        elif choice == "8":
-            stop_dist2()
-
-        elif choice == "9":
-            show_logs("central")
-
-        elif choice == "10":
-            show_logs("dist1")
-
-        elif choice == "11":
-            show_logs("dist2")
-
-        elif choice == "12":
-            stop_all()
-
-        elif choice == "0":
-            stop_all()
+def _input_thread(running: threading.Event):
+    """Lê teclas em thread separada para não bloquear o Live render."""
+    while running.is_set():
+        try:
+            key = input()
+            if not _handle_key(key):
+                running.clear()
+                break
+        except EOFError:
+            running.clear()
             break
 
-        else:
-            print("Opção inválida.")
+
+def main():
+    running = threading.Event()
+    running.set()
+
+    t = threading.Thread(target=_input_thread, args=(running,), daemon=True)
+    t.start()
+
+    console.clear()
+    with Live(
+        _build_layout(),
+        console=console,
+        refresh_per_second=int(1 / REFRESH_RATE),
+        screen=True,
+    ) as live:
+        while running.is_set():
+            live.update(_build_layout())
+            time.sleep(REFRESH_RATE)
+
+    console.clear()
+    console.print("[bold green]Launcher encerrado.[/]")
 
 
 if __name__ == "__main__":
     try:
-        menu()
+        main()
     except KeyboardInterrupt:
         stop_all()
-        print("\n[LAUNCHER] Finalizado.")
+        console.print("\n[bold red]Interrompido.[/]")
