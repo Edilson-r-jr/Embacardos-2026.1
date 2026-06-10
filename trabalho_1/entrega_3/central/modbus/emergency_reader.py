@@ -68,7 +68,7 @@ class EmergencyReader:
             pos = 3 + i * 2
             regs.append((response[pos] << 8) | response[pos + 1])
 
-        print("REGS:", regs)
+        
 
         return {
             'active': regs[0],

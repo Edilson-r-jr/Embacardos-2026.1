@@ -63,69 +63,69 @@ class TCPClient(threading.Thread):
         self.sensor_polling_thread.start()
 
     def connect(self):
+        # Fecha socket anterior antes de criar um novo
+        if self.socket:
+            try:
+                self.socket.close()
+            except Exception:
+                pass
+            self.socket = None
 
         while self.running:
-
             try:
-
-                self.socket = socket.socket(
-                    socket.AF_INET,
-                    socket.SOCK_STREAM
-                )
-
-                self.socket.connect(
-                    (self.host, self.port)
-                )
-
-                print(
-                    f"[DIST {self.intersection_id}] "
-                    "Conectado"
-                )
-
+                sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+                sock.connect((self.host, self.port))
+                self.socket = sock  # só atribui após conexão bem-sucedida
+                print(f"[DIST {self.intersection_id}] Conectado")
                 return
-
             except Exception:
-
-                print(
-                    f"[DIST {self.intersection_id}] "
-                    "Reconectando..."
-                )
-
+                print(f"[DIST {self.intersection_id}] Reconectando...")
+                try:
+                    sock.close()
+                except Exception:
+                    pass
                 time.sleep(2)
 
     def send_message(self, message):
         try:
-            self.socket.send(
-                (message + "\n").encode()
-            )
+            self.socket.send((message + "\n").encode())
         except Exception as e:
             print(f"[DIST {self.intersection_id}] Erro ao enviar: {e}")
+            self.socket = None  # sinaliza desconexão para o loop principal
 
     def receive_commands(self):
-        """Thread para receber comandos do servidor central"""
+        """Thread que recebe comandos do central.
+        Não reconecta — apenas sinaliza a queda para o loop run()."""
         buffer = ""
-        
+
         while self.running:
+            sock = self.socket  # captura local para evitar race condition
+            if not sock:
+                time.sleep(0.1)
+                continue
             try:
-                if self.socket:
-                    self.socket.settimeout(0.5)
-                    try:
-                        data = self.socket.recv(1024)
-                        if not data:
-                            raise ConnectionError("Conexão fechada")
-                        
-                        buffer += data.decode()
-                        
-                        while "\n" in buffer:
-                            line, buffer = buffer.split("\n", 1)
-                            if line:
-                                self.process_command(line)
-                    except socket.timeout:
-                        pass
+                sock.settimeout(0.5)
+                try:
+                    data = sock.recv(1024)
+                    if not data:
+                        print(f"[DIST {self.intersection_id}] Conexão fechada pelo servidor")
+                        if self.socket is sock:
+                            self.socket = None
+                        buffer = ""
+                        continue
+                    buffer += data.decode()
+                    while "\n" in buffer:
+                        line, buffer = buffer.split("\n", 1)
+                        if line:
+                            self.process_command(line)
+                except socket.timeout:
+                    pass
             except Exception as e:
                 print(f"[DIST {self.intersection_id}] Erro ao receber: {e}")
-                self.connect()
-                
+                if self.socket is sock:
+                    self.socket = None
+                buffer = ""
+
             time.sleep(0.1)
 
     def process_command(self, command_str):
@@ -151,36 +151,30 @@ class TCPClient(threading.Thread):
             print(f"[DIST {self.intersection_id}] Erro ao processar comando: {e}")
 
     def run(self):
-
-        self.connect()
-        
-        # Inicia thread de recebimento de comandos
-        threading.Thread(
-            target=self.receive_commands,
-            daemon=True
-        ).start()
-
         if self.speed_sensors:
             self.start_sensor_polling()
+
+        # Thread de recebimento apenas sinaliza a queda; run() reconecta
+        threading.Thread(target=self.receive_commands, daemon=True).start()
 
         last_heartbeat = 0
         last_count_update = 0
 
         while self.running:
+            # Único ponto de reconexão: detecta socket None e reconecta
+            if not self.socket:
+                self.connect()
+                last_heartbeat = 0  # força heartbeat imediato após reconexão
+                if not self.socket:
+                    time.sleep(0.5)
+                    continue
 
             try:
-
                 now = time.time()
 
                 # Heartbeat
                 if now - last_heartbeat >= 2:
-
-                    self.send_message(
-                        create_heartbeat(
-                            self.intersection_id
-                        )
-                    )
-
+                    self.send_message(create_heartbeat(self.intersection_id))
                     last_heartbeat = now
 
                 # Leitura de velocidade e infrações reais
@@ -198,7 +192,6 @@ class TCPClient(threading.Thread):
 
                 # Contagem de veículos
                 if now - last_count_update >= 2:
-
                     if self.speed_sensors:
                         for sensor_id, sensor in self.speed_sensors.items():
                             count = sensor.get_vehicle_count()
@@ -214,58 +207,26 @@ class TCPClient(threading.Thread):
                         # Simulação (fallback)
                         self.sensor_1_count += random.randint(1, 5)
                         self.sensor_2_count += random.randint(1, 5)
-
                         self.send_message(
-                            create_vehicle_count(
-                                self.intersection_id,
-                                1,
-                                self.sensor_1_count
-                            )
+                            create_vehicle_count(self.intersection_id, 1, self.sensor_1_count)
                         )
-
                         self.send_message(
-                            create_vehicle_count(
-                                self.intersection_id,
-                                2,
-                                self.sensor_2_count
-                            )
+                            create_vehicle_count(self.intersection_id, 2, self.sensor_2_count)
                         )
-
                     last_count_update = now
 
                 # Simulação de infração apenas se não há sensores reais disponíveis
                 if not self.speed_sensors and random.random() < 0.03:
-
-                    sensor = random.choice(
-                        [1, 2]
-                    )
-
-                    speed = round(
-                        random.uniform(
-                            61,
-                            100
-                        ),
-                        1
-                    )
-
+                    sensor = random.choice([1, 2])
+                    speed = round(random.uniform(61, 100), 1)
                     self.send_message(
-                        create_speed_violation(
-                            self.intersection_id,
-                            sensor,
-                            speed
-                        )
+                        create_speed_violation(self.intersection_id, sensor, speed)
                     )
 
                 time.sleep(0.5)
 
             except Exception as e:
-
-                print(
-                    f"[DIST {self.intersection_id}] "
-                    f"Erro: {e}"
-                )
-
-                self.connect()
+                print(f"[DIST {self.intersection_id}] Erro: {e}")
     
     def stop(self):
         """Para o cliente"""

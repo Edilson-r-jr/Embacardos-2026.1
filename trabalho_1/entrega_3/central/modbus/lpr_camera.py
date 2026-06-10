@@ -55,7 +55,7 @@ class LPRCamera:
     # MODBUS WRITE (trigger)
     # -----------------------------
     def _write_register(self, offset, value):
-        print("[DEBUG] WRITE ENTER")
+        
         #little endian: high byte first, low byte second
         packet = bytes([
             self.address,
@@ -68,7 +68,6 @@ class LPRCamera:
 
         resp = self.bus.request(packet, 8)
 
-        print("[DEBUG] WRITE RESP =", resp)
         
         return resp is not None
 

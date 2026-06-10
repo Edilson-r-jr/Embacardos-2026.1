@@ -31,31 +31,53 @@ Editar `config/intersection1.json` e `config/intersection2.json` conforme necess
 
 ## Uso
 
-Abrir 3 terminais:
-
-### Terminal 1 - Servidor Central
+### Launcher (recomendado)
 
 ```bash
+cd entrega_3
+python launcher.py
+```
+
+O launcher abre uma interface de terminal interativa que gerencia todos os processos em um único painel.
+
+#### Controles do Launcher
+
+| Tecla | Ação |
+|-------|------|
+| `1` | Iniciar Central |
+| `2` | Iniciar Distribuído 1 |
+| `3` | Iniciar Distribuído 2 |
+| `A` | Iniciar todos os processos |
+| `Q` | Parar Central |
+| `W` | Parar Distribuído 1 |
+| `E` | Parar Distribuído 2 |
+| `S` | Parar todos os processos |
+| `C` | Ver log da Central |
+| `V` | Ver log do Distribuído 1 |
+| `B` | Ver log do Distribuído 2 |
+| `N` | Ver multas registradas (`multas.json`) |
+| `↑` | Scroll para cima no log (5 linhas) |
+| `↓` | Scroll para baixo no log (5 linhas) |
+| `R` | Voltar ao fim do log |
+| `F` | Ativar/desativar filtro de ruído (oculta `[MODBUS]` e `[TCP]`) |
+| `0` | Encerrar todos os processos e sair |
+
+> Os processos podem ser iniciados e encerrados em qualquer ordem e a qualquer momento. A reconexão entre central e distribuídos é automática.
+
+### Execução manual (alternativa)
+
+Abrir 3 terminais separados:
+
+```bash
+# Terminal 1 — Servidor Central
 cd entrega_3
 python -m central.main
-```
 
-O servidor central irá:
-- Escutar na porta 5000 por conexões dos cruzamentos
-- Fazer polling periódico do estado de emergência via MODBUS
-- Registrar multas quando infrações de velocidade forem detectadas
-- Exibir dashboard de monitoramento com status dos cruzamentos
-
-### Terminal 2 - Servidor Distribuído 1
-
-```bash
+# Terminal 2 — Distribuído 1
 cd entrega_3
 python -m distributed.main config/intersection1.json
-```
 
-### Terminal 3 - Servidor Distribuído 2
-
-```bash
+# Terminal 3 — Distribuído 2
 cd entrega_3
 python -m distributed.main config/intersection2.json
 ```
@@ -215,6 +237,7 @@ Quando detectado via MODBUS:
 - **Serialização**: JSON
 - **Threading**: Multithreading nativo do Python
 - **Serial**: pyserial
+- **Interface do launcher**: rich
 
 ## Observações de Implementação
 
