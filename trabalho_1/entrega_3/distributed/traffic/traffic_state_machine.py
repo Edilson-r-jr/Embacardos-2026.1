@@ -27,7 +27,10 @@ class TrafficStateMachine(threading.Thread):
         
         # Botões de pedestre
         self.pedestrian_requests = {"main": False, "cross": False}
-        
+
+        # Controle manual: None = sem override, int = código de estado forçado
+        self.manual_override = None
+
         self.lock = threading.Lock()
 
     def set_traffic_light_controller(self, controller):
@@ -42,13 +45,14 @@ class TrafficStateMachine(threading.Thread):
 
     def run(self):
         while True:
-            # Modo noturno
-            if self.night_mode:
+            with self.lock:
+                manual = self.manual_override
+            if manual is not None:
+                self.handle_manual_override()
+            elif self.night_mode:
                 self.handle_night_mode()
-            # Modo de emergência
             elif self.emergency_active:
                 self.handle_emergency_mode()
-            # Modo normal
             else:
                 self.handle_normal_mode()
 
@@ -163,6 +167,22 @@ class TrafficStateMachine(threading.Thread):
             TrafficState.ALL_RED_2: 4,       # Vermelho total
         }
         return state_codes.get(state, 0)
+
+    def handle_manual_override(self):
+        with self.lock:
+            code = self.manual_override
+        if self.traffic_light_controller:
+            self.traffic_light_controller.set_state(code)
+        time.sleep(0.5)
+
+    def set_manual_override(self, state_code):
+        """Força um estado fixo no semáforo. state_code=None retoma o fluxo normal."""
+        with self.lock:
+            self.manual_override = state_code
+            if state_code is None:
+                self.current_state = TrafficState.MAIN_GREEN
+                self.emergency_active = False
+                self.night_mode = False
 
     def set_night_mode(self, enabled):
         """Ativa/desativa modo noturno"""

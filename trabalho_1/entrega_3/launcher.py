@@ -29,6 +29,7 @@ LOG_FILES = {
 }
 
 MULTAS_FILE = "multas.json"
+CMD_FILE    = "central_cmd.json"
 
 LOG_COLORS = {
     "[CENTRAL]":   "bold cyan",
@@ -43,11 +44,7 @@ LOG_COLORS = {
     "[ERROR]":     "bold red",
 }
 
-# Tags consideradas "ruído" — filtradas quando filtro ativo
-NOISE_TAGS = {"[MODBUS]", "[TCP]"}
-
 MAX_LOG_LINES = 300
-VISIBLE_LINES = 20
 REFRESH_RATE  = 0.25
 
 TABS = ["central", "dist1", "dist2", "multas"]
@@ -65,11 +62,12 @@ log_buffers:  dict[str, deque]            = {k: deque(maxlen=MAX_LOG_LINES) for 
 tail_threads: dict[str, threading.Thread] = {}
 start_times:  dict[str, float]            = {}
 
-active_tab    = "central"
-status_msg    = ""
-filter_noise  = False          # quando True, omite linhas com NOISE_TAGS
-scroll_offsets: dict[str, int] = {k: 0 for k in TABS}  # 0 = fim do buffer
-lock          = threading.Lock()
+active_tab     = "central"
+status_msg     = ""
+scroll_offsets: dict[str, int] = {k: 0 for k in TABS}
+lock           = threading.Lock()
+force_mode     = False
+night_mode_on  = False
 
 
 # ──────────────────────────────────────────────
@@ -136,6 +134,23 @@ def _set_status(msg: str):
     status_msg = msg
 
 
+def _write_central_cmd(cmd: dict):
+    try:
+        with open(CMD_FILE, "w", encoding="utf-8") as f:
+            json.dump(cmd, f)
+    except Exception:
+        pass
+
+
+def _enable_mouse():
+    sys.stdout.write("\x1b[?1000h")
+    sys.stdout.flush()
+
+def _disable_mouse():
+    sys.stdout.write("\x1b[?1000l")
+    sys.stdout.flush()
+
+
 # ──────────────────────────────────────────────
 # Ações de menu
 # ──────────────────────────────────────────────
@@ -160,30 +175,12 @@ def stop_all():
 
 
 # ──────────────────────────────────────────────
-# Navegação: abas e scroll
+# Helpers de layout
 # ──────────────────────────────────────────────
 
-def _scroll(lines: int):
-    """Ajusta offset de scroll da aba ativa. Positivo = sobe, negativo = desce."""
-    with lock:
-        if active_tab == "multas":
-            return
-        buf = log_buffers[active_tab]
-        max_offset = max(0, len(buf) - VISIBLE_LINES)
-        new_offset = scroll_offsets[active_tab] + lines
-        scroll_offsets[active_tab] = max(0, min(new_offset, max_offset))
-    off = scroll_offsets[active_tab]
-    if off == 0:
-        _set_status("fim do log")
-    else:
-        _set_status(f"scroll: {off} linhas acima do fim")
-
-
-def _toggle_filter():
-    global filter_noise
-    filter_noise = not filter_noise
-    state = "ativado" if filter_noise else "desativado"
-    _set_status(f"filtro de ruído {state}")
+def _get_visible_lines() -> int:
+    # overhead: top(5) + actions(3 normal / 4 force) + bottom(1) + bordas(2)
+    return max(5, console.size.height - (13 if force_mode else 11))
 
 
 # ──────────────────────────────────────────────
@@ -202,42 +199,111 @@ def _status_dot(name: str) -> Text:
 def _uptime(name: str) -> str:
     t = start_times.get(name)
     if t is None:
-        return "—"
+        return ""
     s = int(time.time() - t)
     return f"{s//3600:02d}:{(s%3600)//60:02d}:{s%60:02d}"
 
 
-def _colorize_line(ts: str, raw: str) -> Text:
-    t = Text()
-    t.append(ts + " ", style="dim")
-    color = "white"
-    for tag, c in LOG_COLORS.items():
+def _parse_log_tag(raw: str) -> tuple[str, str, str]:
+    """Returns (tag_key, display_label, message) from a raw log line."""
+    for tag in LOG_COLORS:
         if tag in raw:
-            color = c
-            break
-    t.append(raw, style=color)
-    return t
+            idx = raw.index(tag)
+            after = raw[idx + len(tag):]
+            if tag.endswith("]"):
+                label = tag[1:-1]
+            else:
+                end = raw.find("]", idx + len(tag))
+                if end != -1:
+                    label = raw[idx + 1:end]
+                    after = raw[end + 1:]
+                else:
+                    label = tag[1:]
+            return tag, label, after.strip()
+    return "", "—", raw
+
+
+def _build_log_table(lines: list) -> Table:
+    tbl = Table(
+        box=box.SIMPLE_HEAD,
+        show_header=True,
+        header_style="bold cyan",
+        expand=True,
+        padding=(0, 1),
+    )
+    tbl.add_column("Hora",    style="dim", no_wrap=True, width=8)
+    tbl.add_column("Módulo",  no_wrap=True, width=12)
+    tbl.add_column("Mensagem")
+
+    for ts, raw in lines:
+        tag_key, label, msg = _parse_log_tag(raw)
+        color = LOG_COLORS.get(tag_key, "dim")
+        tbl.add_row(
+            ts,
+            Text(label, style=color),
+            Text(msg if msg else raw, style="white"),
+        )
+    return tbl
 
 
 def _build_status_panel() -> Panel:
-    grid = Table.grid(expand=True, padding=(0, 2))
-    grid.add_column(ratio=1)
-    grid.add_column(ratio=1)
-    grid.add_column(ratio=1)
+    proc_grid = Table.grid(expand=True, padding=(0, 2))
+    proc_grid.add_column(ratio=1)
+    proc_grid.add_column(ratio=1)
+    proc_grid.add_column(ratio=1)
 
-    def proc_cell(name: str, label: str) -> Text:
+    def proc_cell(name: str, label: str, k_start: str, k_stop: str, k_tab: str) -> Text:
         t = Text()
         t.append(f"{label}\n", style="bold")
         t.append(_status_dot(name))
-        t.append(f"  uptime: {_uptime(name)}", style="dim")
+        up = _uptime(name)
+        if up:
+            t.append(f"  {up}", style="dim")
+        t.append("\n")
+        t.append(f"[{k_start}]", style="bold cyan"); t.append(" ▶  ", style="green")
+        t.append(f"[{k_stop}]",  style="bold cyan"); t.append(" ■  ", style="red")
+        t.append(f"[{k_tab}]",   style="bold cyan"); t.append(" log", style="dim")
         return t
 
-    grid.add_row(
-        proc_cell("central", "Central"),
-        proc_cell("dist1",   "Distribuído 1"),
-        proc_cell("dist2",   "Distribuído 2"),
+    proc_grid.add_row(
+        proc_cell("central", "Central",       "1", "Q", "C"),
+        proc_cell("dist1",   "Distribuído 1", "2", "W", "V"),
+        proc_cell("dist2",   "Distribuído 2", "3", "E", "B"),
     )
-    return Panel(grid, title="[bold]Status dos processos[/]", border_style="bright_black", box=box.ROUNDED)
+
+    return Panel(proc_grid, title="[bold]Status dos processos[/]", border_style="bright_black", box=box.ROUNDED)
+
+
+def _build_actions_panel() -> Panel:
+    if force_mode:
+        grid = Table.grid(expand=True, padding=(0, 1))
+        grid.add_column()
+
+        row1 = Text()
+        row1.append("CRZ-1: ", style="bold")
+        for k, lbl in [("1", "principal"), ("2", "cruzamento"), ("3", "vermelho"), ("4", "normal")]:
+            row1.append(f"[{k}]", style="bold cyan"); row1.append(f" {lbl}   ", style="dim")
+        row1.append("│  ", style="dim")
+        row1.append("[Y]", style="bold cyan"); row1.append(" amarelo intermitente", style="dim")
+
+        row2 = Text()
+        row2.append("CRZ-2: ", style="bold")
+        for k, lbl in [("5", "principal"), ("6", "cruzamento"), ("7", "vermelho"), ("8", "normal")]:
+            row2.append(f"[{k}]", style="bold cyan"); row2.append(f" {lbl}   ", style="dim")
+        row2.append("│  ", style="dim")
+        row2.append("[Esc]", style="bold cyan"); row2.append(" cancelar", style="dim")
+
+        grid.add_row(row1)
+        grid.add_row(row2)
+        return Panel(grid, title="[bold yellow]Controle Manual[/]", border_style="yellow", box=box.ROUNDED)
+
+    t = Text(justify="center")
+    t.append("[A]", style="bold cyan"); t.append(" ▶ iniciar todos    ", style="dim")
+    t.append("[S]", style="bold cyan"); t.append(" ■ parar todos    ",   style="dim")
+    t.append("[F]", style="bold cyan"); t.append(" controle    ",        style="dim")
+    t.append("[N]", style="bold cyan"); t.append(" multas    ",          style="dim")
+    t.append("[0]", style="bold cyan"); t.append(" sair",                style="dim")
+    return Panel(t, border_style="bright_black", box=box.ROUNDED)
 
 
 def _build_tabs_header() -> Text:
@@ -256,51 +322,43 @@ def _build_log_panel() -> Panel:
     if active_tab == "multas":
         return _build_multas_panel()
 
+    visible = _get_visible_lines()
     with lock:
         all_lines = list(log_buffers[active_tab])
         offset = scroll_offsets[active_tab]
 
-    # aplicar filtro de ruído
-    if filter_noise:
-        all_lines = [
-            (ts, raw) for ts, raw in all_lines
-            if not any(tag in raw for tag in NOISE_TAGS)
-        ]
-
     n = len(all_lines)
+
+    # corrige offset caso o terminal tenha sido redimensionado
+    max_offset = max(0, n - visible)
+    if offset > max_offset:
+        offset = max_offset
+        with lock:
+            scroll_offsets[active_tab] = offset
+
     if offset == 0:
-        lines = all_lines[-VISIBLE_LINES:]
+        lines = all_lines[-visible:]
     else:
-        end = max(0, n - offset)
-        start = max(0, end - VISIBLE_LINES)
+        end   = max(0, n - offset)
+        start = max(0, end - visible)
         lines = all_lines[start:end]
 
-    log_text = Text()
-    for ts, raw in lines:
-        log_text.append_text(_colorize_line(ts, raw))
-        log_text.append("\n")
-    log_text.append("\n" * max(0, VISIBLE_LINES - len(lines)))
-
-    # subtítulo mostra posição no buffer
-    if offset == 0:
-        sub_info = f"  {n} linhas  fim  "
-    else:
-        sub_info = f"  {n} linhas  ↑ {offset} acima do fim  "
-    if filter_noise:
-        sub_info += "  [filtro ativo]  "
-
-    subtitle = Text(sub_info, style="dim")
+    sub_info = f"  {n} linhas"
+    if offset > 0:
+        sub_info += f"  ↑ {offset} acima do fim"
+    sub_info += "  "
 
     return Panel(
-        log_text,
+        _build_log_table(lines),
         title=_build_tabs_header(),
-        subtitle=subtitle,
+        subtitle=Text(sub_info, style="dim"),
         border_style="bright_black",
         box=box.ROUNDED,
     )
 
 
 def _build_multas_panel() -> Panel:
+    visible = _get_visible_lines()
     violations = []
     err_msg = ""
     try:
@@ -313,15 +371,13 @@ def _build_multas_panel() -> Panel:
         err_msg = f"Erro ao ler multas.json: {e}"
 
     if err_msg:
-        body = Text(err_msg, style="dim red")
         return Panel(
-            body,
+            Text(err_msg, style="dim red"),
             title=_build_tabs_header(),
             border_style="bright_black",
             box=box.ROUNDED,
         )
 
-    # exibe as últimas N multas em tabela
     tbl = Table(
         box=box.SIMPLE_HEAD,
         show_header=True,
@@ -329,79 +385,43 @@ def _build_multas_panel() -> Panel:
         expand=True,
         padding=(0, 1),
     )
-    tbl.add_column("Hora",         style="dim",          width=8)
-    tbl.add_column("Cruzamento",   style="cyan",         width=12)
-    tbl.add_column("Placa",        style="bold white",   width=10)
-    tbl.add_column("Velocidade",   style="bold yellow",  width=12, justify="right")
-    tbl.add_column("Confiança",    style="green",        width=10, justify="right")
-    tbl.add_column("Multa (R$)",   style="bold red",     width=12, justify="right")
-    tbl.add_column("Sensor",       style="dim",          width=8)
+    tbl.add_column("Hora",        style="dim",         no_wrap=True)
+    tbl.add_column("Cruzamento",  style="cyan",        no_wrap=True)
+    tbl.add_column("Placa",       style="bold white",  no_wrap=True)
+    tbl.add_column("Velocidade",  style="bold yellow", no_wrap=True, justify="right")
+    tbl.add_column("Confiança",   style="green",       no_wrap=True, justify="right")
+    tbl.add_column("Multa (R$)",  style="bold red",    no_wrap=True, justify="right")
+    tbl.add_column("Sensor",      style="dim",         no_wrap=True)
 
-    shown = violations[-VISIBLE_LINES:]
+    shown = violations[-visible:]
     for v in reversed(shown):
         ts_raw = v.get("timestamp", "")
-        # extrai só HH:MM:SS se vier no formato ISO
         try:
             ts = datetime.fromisoformat(str(ts_raw)).strftime("%H:%M:%S")
         except Exception:
             ts = str(ts_raw)[:8]
+
+        conf = v.get("confidence", "—")
+        conf_str = f'{conf*100:.0f}%' if isinstance(conf, float) else str(conf)
 
         tbl.add_row(
             ts,
             str(v.get("intersection_id", "—")),
             str(v.get("plate", "—")),
             f'{v.get("speed_kmh", 0):.1f} km/h',
-            f'{v.get("confidence", 0)*100:.0f}%' if isinstance(v.get("confidence"), float) else str(v.get("confidence", "—")),
+            conf_str,
             f'R$ {v.get("fine_value", 0):.2f}',
             str(v.get("sensor_id", "—")),
         )
 
     total = len(violations)
-    subtitle = Text(f"  {total} multa(s) registrada(s) — mostrando últimas {min(total, VISIBLE_LINES)}  ", style="dim")
-
     return Panel(
         tbl,
         title=_build_tabs_header(),
-        subtitle=subtitle,
+        subtitle=Text(f"  {total} multa(s) — mostrando últimas {min(total, visible)}  ", style="dim"),
         border_style="bright_black",
         box=box.ROUNDED,
     )
-
-
-def _build_controls_panel() -> Panel:
-    t = Table.grid(padding=(0, 1))
-    t.add_column(style="bold cyan", min_width=6)
-    t.add_column()
-
-    rows = [
-        ("[bold]Processos[/]", ""),
-        ("[1]", "[green]▶[/] iniciar Central"),
-        ("[2]", "[green]▶[/] iniciar Dist-1"),
-        ("[3]", "[green]▶[/] iniciar Dist-2"),
-        ("[A]", "[green]▶[/] iniciar tudo"),
-        ("[Q]", "[red]■[/] parar Central"),
-        ("[W]", "[red]■[/] parar Dist-1"),
-        ("[E]", "[red]■[/] parar Dist-2"),
-        ("[S]", "[red]■[/] parar tudo"),
-        ("", ""),
-        ("[bold]Abas[/]", ""),
-        ("[C]",  "aba Central"),
-        ("[V]",  "aba Dist-1"),
-        ("[B]",  "aba Dist-2"),
-        ("[N]",  "aba Multas"),
-        ("", ""),
-        ("[bold]Scroll[/]", ""),
-        ("[↑]",  "scroll ↑ (5 linhas)"),
-        ("[↓]",  "scroll ↓ (5 linhas)"),
-        ("[R]",  "voltar ao fim"),
-        ("[F]",       "filtro ruído on/off"),
-        ("", ""),
-        ("[0]", "[bold red]sair[/]"),
-    ]
-    for key, desc in rows:
-        t.add_row(key, desc)
-
-    return Panel(t, title="[bold]Controles[/]", border_style="bright_black", box=box.ROUNDED)
 
 
 def _build_bottom_bar() -> Text:
@@ -412,26 +432,21 @@ def _build_bottom_bar() -> Text:
     if status_msg:
         t.append(status_msg, style="yellow")
     else:
-        t.append("aguardando comando...", style="dim")
-    if filter_noise:
-        t.append("  [filtro ativo]", style="dim magenta")
+        t.append("scroll: roda do mouse", style="dim")
     return t
 
 
 def _build_layout() -> Layout:
     layout = Layout()
     layout.split_column(
-        Layout(name="top",    size=7),
-        Layout(name="middle", ratio=1),
-        Layout(name="bottom", size=1),
-    )
-    layout["middle"].split_row(
-        Layout(name="logs",     ratio=3),
-        Layout(name="controls", ratio=1),
+        Layout(name="top",     size=5),
+        Layout(name="actions", size=4 if force_mode else 3),
+        Layout(name="middle",  ratio=1),
+        Layout(name="bottom",  size=1),
     )
     layout["top"].update(_build_status_panel())
-    layout["logs"].update(_build_log_panel())
-    layout["controls"].update(_build_controls_panel())
+    layout["actions"].update(_build_actions_panel())
+    layout["middle"].update(_build_log_panel())
     layout["bottom"].update(_build_bottom_bar())
     return layout
 
@@ -442,57 +457,111 @@ def _build_layout() -> Layout:
 
 TAB_KEYS = {"c": "central", "v": "dist1", "b": "dist2", "n": "multas"}
 
+_FORCE_MAP = {
+    "1": (1, 1),    "2": (1, 5),    "3": (1, 4),    "4": (1, None),
+    "5": (2, 1),    "6": (2, 5),    "7": (2, 4),    "8": (2, None),
+}
+_STATE_LABELS = {1: "principal verde", 5: "cruzamento verde", 4: "vermelho total", None: "normal"}
+
+
+def _handle_force_key(key: str):
+    global force_mode, night_mode_on
+    if key in _FORCE_MAP:
+        iid, code = _FORCE_MAP[key]
+        _write_central_cmd({"type": "manual_override", "intersection_id": iid, "state_code": code})
+        _set_status(f"CRZ-{iid}: {_STATE_LABELS[code]}")
+        force_mode = False
+    elif key == "y":
+        night_mode_on = not night_mode_on
+        _write_central_cmd({"type": "night_mode", "enabled": night_mode_on})
+        _set_status(f"amarelo intermitente: {'ON' if night_mode_on else 'OFF'}")
+        force_mode = False
+
 
 def _handle_key(key: str) -> bool:
-    """Retorna False para sair."""
+    global active_tab, force_mode
+
+    if key == "esc":
+        if force_mode:
+            force_mode = False
+            _set_status("controle cancelado")
+        return True
+
+    if force_mode:
+        _handle_force_key(key)
+        return True
+
     if key in TAB_KEYS:
-        global active_tab
         active_tab = TAB_KEYS[key]
         _set_status(f"aba: {active_tab}")
-    elif key == "up":     _scroll(+5)
-    elif key == "down":   _scroll(-5)
-    elif key == "1":      start_central()
-    elif key == "2":      start_dist1()
-    elif key == "3":      start_dist2()
-    elif key == "a":      start_all()
-    elif key == "q":      _stop("central")
-    elif key == "w":      _stop("dist1")
-    elif key == "e":      _stop("dist2")
-    elif key == "s":      stop_all()
-    elif key == "r":
-        with lock:
-            scroll_offsets[active_tab] = 0
-        _set_status("fim do log")
-    elif key == "f":      _toggle_filter()
+    elif key == "scroll_up":
+        if active_tab != "multas":
+            with lock:
+                buf     = log_buffers[active_tab]
+                visible = _get_visible_lines()
+                max_off = max(0, len(buf) - visible)
+                scroll_offsets[active_tab] = min(scroll_offsets[active_tab] + 3, max_off)
+    elif key == "scroll_down":
+        if active_tab != "multas":
+            with lock:
+                scroll_offsets[active_tab] = max(0, scroll_offsets[active_tab] - 3)
+    elif key == "1":  start_central()
+    elif key == "2":  start_dist1()
+    elif key == "3":  start_dist2()
+    elif key == "a":  start_all()
+    elif key == "q":  _stop("central")
+    elif key == "w":  _stop("dist1")
+    elif key == "e":  _stop("dist2")
+    elif key == "s":  stop_all()
+    elif key == "f":
+        force_mode = True
+        _set_status("controle manual: escolha ação (Esc cancela)")
     elif key == "0":
         stop_all()
         return False
     return True
 
 
+def _drain(n: int, timeout: float = 0.15):
+    """Descarta n bytes do stdin com timeout por byte."""
+    for _ in range(n):
+        if not select.select([sys.stdin], [], [], timeout)[0]:
+            break
+        sys.stdin.read(1)
+
+
 def _read_key() -> str:
-    """Lê uma tecla em modo raw e retorna um identificador legível."""
+    """Lê uma tecla ou evento de mouse em modo raw."""
     ch = sys.stdin.read(1)
+    if not ch:
+        return ""
     if ch == "\x1b":
-        # tenta ler o restante da sequência de escape (ex.: setas)
-        ready = select.select([sys.stdin], [], [], 0.05)[0]
-        if ready:
-            ch2 = sys.stdin.read(1)
-            if ch2 == "[":
-                ready2 = select.select([sys.stdin], [], [], 0.05)[0]
-                if ready2:
-                    ch3 = sys.stdin.read(1)
-                    if ch3 == "A": return "up"
-                    if ch3 == "B": return "down"
-                    if ch3 == "C": return "right"
-                    if ch3 == "D": return "left"
+        if not select.select([sys.stdin], [], [], 0.1)[0]:
+            return "esc"
+        ch2 = sys.stdin.read(1)
+        if ch2 != "[":
+            return "esc"
+        if not select.select([sys.stdin], [], [], 0.1)[0]:
+            return "esc"
+        ch3 = sys.stdin.read(1)
+        if ch3 == "M":
+            try:
+                if not select.select([sys.stdin], [], [], 0.15)[0]:
+                    return "mouse"
+                b = ord(sys.stdin.read(1)) - 32
+                _drain(2)  # descarta x e y
+                if b == 64: return "scroll_up"
+                if b == 65: return "scroll_down"
+            except Exception:
+                pass
+            return "mouse"
+        # sequência desconhecida — bytes já consumidos, ignora
         return "esc"
     return ch.lower()
 
 
 def _input_thread(running: threading.Event):
     if not sys.stdin.isatty():
-        # fallback para ambientes sem TTY (pipe, testes)
         while running.is_set():
             try:
                 key = input().strip().lower()
@@ -506,13 +575,18 @@ def _input_thread(running: threading.Event):
     old = termios.tcgetattr(fd)
     try:
         tty.setcbreak(fd)
+        _enable_mouse()
         while running.is_set():
             ready = select.select([sys.stdin], [], [], 0.1)[0]
             if ready:
-                key = _read_key()
-                if not _handle_key(key):
+                try:
+                    key = _read_key()
+                except Exception:
+                    continue
+                if key and not _handle_key(key):
                     running.clear()
     finally:
+        _disable_mouse()
         termios.tcsetattr(fd, termios.TCSADRAIN, old)
 
 

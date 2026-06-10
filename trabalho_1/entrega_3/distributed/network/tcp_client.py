@@ -146,6 +146,13 @@ class TCPClient(threading.Thread):
                 if self.traffic_state_machine:
                     self.traffic_state_machine.set_emergency(active, signal_group)
                     print(f"[DIST {self.intersection_id}] Emergência: {active}, grupo: {signal_group}")
+
+            elif cmd_type == "manual_override":
+                state_code = cmd.get("state_code")
+                if self.traffic_state_machine:
+                    self.traffic_state_machine.set_manual_override(state_code)
+                    label = "retomar normal" if state_code is None else f"código={state_code}"
+                    print(f"[DIST {self.intersection_id}] Controle manual: {label}")
             
         except Exception as e:
             print(f"[DIST {self.intersection_id}] Erro ao processar comando: {e}")
@@ -190,7 +197,7 @@ class TCPClient(threading.Thread):
                                 )
                             )
 
-                # Contagem de veículos
+                # Contagem de veículos (envia cumulativo)
                 if now - last_count_update >= 2:
                     if self.speed_sensors:
                         for sensor_id, sensor in self.speed_sensors.items():
@@ -204,14 +211,18 @@ class TCPClient(threading.Thread):
                                     )
                                 )
                     else:
-                        # Simulação (fallback)
+                        # Simulação (fallback) — usa IDs corretos por cruzamento
                         self.sensor_1_count += random.randint(1, 5)
                         self.sensor_2_count += random.randint(1, 5)
+                        if self.intersection_id == 1:
+                            sid_a, sid_b = 1, 2
+                        else:
+                            sid_a, sid_b = 3, 4
                         self.send_message(
-                            create_vehicle_count(self.intersection_id, 1, self.sensor_1_count)
+                            create_vehicle_count(self.intersection_id, sid_a, self.sensor_1_count)
                         )
                         self.send_message(
-                            create_vehicle_count(self.intersection_id, 2, self.sensor_2_count)
+                            create_vehicle_count(self.intersection_id, sid_b, self.sensor_2_count)
                         )
                     last_count_update = now
 

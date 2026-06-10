@@ -1,6 +1,10 @@
+import json
+import os
 import threading
 import time
 from datetime import datetime
+
+CMD_FILE = "central_cmd.json"
 
 from central.network.tcp_server import TCPServer
 from central.state.state_manager import StateManager
@@ -33,6 +37,7 @@ class CentralManager:
         # Modo noturno
         self.night_mode_active = False
         self.night_mode_last_toggle = 0
+        self.night_mode_manual_override = False  # True = ignora MODBUS para night mode
 
     def on_new_connection(self, intersection_id):
         """Reenvia estado salvo para um novo cruzamento conectado"""
@@ -96,13 +101,10 @@ class CentralManager:
         print("[CENTRAL] Sistema iniciado")
     
     def handle_speed_violation(self, intersection_id, sensor_id, speed_kmh):
-        timestamp = datetime.now().strftime("%H:%M:%S")
         print(
-            f"[{timestamp}] "
-            f"[PUSH] Infração recebida | "
-            f"Cruzamento={intersection_id} "
-            f"Sensor={sensor_id} "
-            f"Velocidade={speed_kmh:.1f} km/h"
+            f"[PUSH] Infração | "
+            f"CRZ-{intersection_id} sensor:{sensor_id} "
+            f"vel:{speed_kmh:.1f} km/h"
         )
         
         # Dispara câmera LPR correspondente
@@ -192,6 +194,9 @@ class CentralManager:
         if not emergency_state:
             return
 
+        if self.night_mode_manual_override:
+            return
+
         night_mode = bool(emergency_state.get('night_mode', 0))
 
         if night_mode != self.night_mode_active:
@@ -225,66 +230,36 @@ class CentralManager:
             time.sleep(0.5)
     
     def dashboard_loop(self):
-        """Loop de dashboard de monitoramento"""
         while True:
             try:
-                print("\n" * 3)
-                print("=" * 70)
-                print("CENTRAL DE MONITORAMENTO")
-                print("=" * 70)
-                
                 snapshot = self.state_manager.get_snapshot()
-                
-                for intersection in snapshot.values():
-                    print()
-                    print(f"Cruzamento {intersection.intersection_id}")
-                    print("-" * 70)
-                    
-                    status = (
-                        "ONLINE" if intersection.is_online() else "OFFLINE"
+
+                for iid, intersection in snapshot.items():
+                    sensors = "  ".join(
+                        f"S{sid}={intersection.vehicle_rate.get(sid, 0):.1f}/min"
+                        for sid in sorted(intersection.vehicle_count)
+                    ) if intersection.vehicle_count else "sem dados"
+
+                    violations = self.violations_logger.get_violations_by_intersection(iid)
+                    total      = self.violations_logger.get_total_fine_value_by_intersection(iid)
+                    fines_str  = f"R${total:.2f}" if total > 0 else "R$0,00"
+
+                    print(
+                        f"[DIST {iid}] CRZ-{iid} | "
+                        f"veículos:{sensors} | "
+                        f"infrações:{intersection.speed_violations} "
+                        f"multas:{len(violations)} {fines_str}"
                     )
-                    print(f"  Status: {status}")
-                    
-                    heartbeat = intersection.seconds_since_heartbeat()
-                    if heartbeat is None:
-                        print(f"  Heartbeat: nunca")
-                    else:
-                        print(f"  Heartbeat: {heartbeat}s")
-                    
-                    # Calcula fluxo de tráfego por sensor
-                    if intersection.vehicle_count:
-                        for sensor_id, count in sorted(
-                            intersection.vehicle_count.items(),
-                            key=lambda x: int(x[0])
-                        ):
-                            print(f"  Sensor {sensor_id}: {count} veículos")
-                    else:
-                        print("  Nenhum dado de sensor disponível")
-                    
-                    # Violações
-                    violations = self.violations_logger.get_violations_by_intersection(
-                        intersection.intersection_id
-                    )
-                    total_fines = self.violations_logger.get_total_fine_value_by_intersection(
-                        intersection.intersection_id
-                    )
-                    
-                    print(f"  Infrações: {intersection.speed_violations}")
-                    print(f"  Multas Registradas: {len(violations)}")
-                    if total_fines > 0:
-                        print(f"  Valor Total: R$ {total_fines:.2f}")
-                
-                print()
-                print("=" * 70)
-                print(f"  Modo Noturno: {'SIM' if self.night_mode_active else 'NÃO'}")
-                if self.last_emergency_state:
-                    print(f"  Emergência: ATIVA")
-                print("=" * 70)
-                
-                time.sleep(2)
+                    print("")
+
+                night = "SIM" if self.night_mode_active else "NÃO"
+                emerg = "ATIVA" if self.last_emergency_state else "NÃO"
+                print(f"[CENTRAL] sistema | noturno:{night} | emergência:{emerg}")
+
             except Exception as e:
                 print(f"[CENTRAL] Erro no dashboard: {e}")
-                time.sleep(2)
+
+            time.sleep(5)
     def clear_emergency_command(self): #clear_emergency_command encerrar o modo de emergência em todos os cruzamentos"""
         if not self.server:
             return
@@ -300,16 +275,53 @@ class CentralManager:
         self.server.send_command_to_intersection(1, command)
         self.server.send_command_to_intersection(2, command)
 
+    def _poll_commands(self):
+        while True:
+            try:
+                if os.path.exists(CMD_FILE):
+                    with open(CMD_FILE, "r", encoding="utf-8") as f:
+                        cmd = json.load(f)
+                    os.remove(CMD_FILE)
+                    self._execute_command(cmd)
+            except Exception as e:
+                print(f"[CENTRAL] Erro ao ler comando manual: {e}")
+            time.sleep(0.3)
+
+    def _execute_command(self, cmd):
+        cmd_type = cmd.get("type")
+
+        if cmd_type == "night_mode":
+            enabled = cmd.get("enabled", False)
+            self.night_mode_active = enabled
+            # Ao ligar manualmente, bloqueia o MODBUS; ao desligar, libera
+            self.night_mode_manual_override = enabled
+            self.state_manager.set_night_mode(enabled)
+            print(f"[NIGHT MODE] {'Ativado' if enabled else 'Desativado'} (manual)")
+            if self.server:
+                command = {"type": "night_mode", "enabled": enabled}
+                self.server.send_command_to_intersection(1, command)
+                self.server.send_command_to_intersection(2, command)
+
+        elif cmd_type == "manual_override":
+            iid        = cmd.get("intersection_id")
+            state_code = cmd.get("state_code")
+            label      = "retomar normal" if state_code is None else f"código={state_code}"
+            print(f"[CENTRAL] controle manual CRZ-{iid}: {label}")
+            if self.server and iid:
+                self.server.send_command_to_intersection(
+                    iid, {"type": "manual_override", "state_code": state_code}
+                )
+
     def run(self):
         """Executa o sistema central"""
         self.initialize()
         
         # Inicia thread de polling de emergência
-        threading.Thread(
-            target=self.polling_emergency,
-            daemon=True
-        ).start()
-        
+        threading.Thread(target=self.polling_emergency, daemon=True).start()
+
+        # Inicia thread de polling de comandos manuais
+        threading.Thread(target=self._poll_commands, daemon=True).start()
+
         # Inicia dashboard
         self.dashboard_loop()
     
