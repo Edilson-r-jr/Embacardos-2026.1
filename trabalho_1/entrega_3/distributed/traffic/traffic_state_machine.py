@@ -97,31 +97,59 @@ class TrafficStateMachine(threading.Thread):
         time.sleep(1)
 
     def handle_normal_mode(self):
-        """Modo normal: máquina de estados padrão"""
+        """Modo normal: máquina de estados com suporte a pedestre e interrupção de modo."""
         with self.lock:
             current_state = self.current_state
+            ped_key = TrafficController.get_pedestrian_key(current_state)
+            # Descarta request acumulado de ciclos anteriores ao entrar no estado
+            if ped_key:
+                self.pedestrian_requests[ped_key] = False
 
-        # Obtém duração do estado
-        duration = TrafficController.get_duration(current_state)
-        
-        # Converte estado para código de semáforo
+        min_dur = TrafficController.get_min_duration(current_state)
+        max_dur = TrafficController.get_max_duration(current_state)
         state_code = self._state_to_code(current_state)
 
         print(
             f"[DIST {self.intersection_id}] "
-            f"{current_state.name} ({duration}s) - Código: {state_code}"
+            f"{current_state.name} ({min_dur}–{max_dur}s) - Código: {state_code}"
         )
-        
-        # Escreve no GPIO
+
         if self.traffic_light_controller:
             self.traffic_light_controller.set_state(state_code)
 
-        time.sleep(duration)
+        start = time.time()
+        while True:
+            # Prioridade máxima: mudança de modo — retorna sem avançar o estado
+            with self.lock:
+                if self.night_mode or self.emergency_active:
+                    return
+
+            elapsed = time.time() - start
+
+            # Tempo máximo sempre avança o estado
+            if elapsed >= max_dur:
+                break
+
+            # Após o mínimo, verifica botão de pedestre (apenas fases verdes)
+            if elapsed >= min_dur:
+                if ped_key:
+                    with self.lock:
+                        if self.pedestrian_requests.get(ped_key, False):
+                            self.pedestrian_requests[ped_key] = False
+                            print(
+                                f"[DIST {self.intersection_id}] "
+                                f"Pedestre '{ped_key}': antecipando mudança "
+                                f"({elapsed:.1f}s/{min_dur}s mínimo)"
+                            )
+                            break
+                else:
+                    # Estados de duração fixa (amarelo, vermelho total): avança ao atingir mínimo
+                    break
+
+            time.sleep(0.1)
 
         with self.lock:
-            self.current_state = (
-                TrafficController.next_state(current_state)
-            )
+            self.current_state = TrafficController.next_state(current_state)
     
     def _state_to_code(self, state):
         """Converte estado da máquina para código de semáforo de 3 bits"""
