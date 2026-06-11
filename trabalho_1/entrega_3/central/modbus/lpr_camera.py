@@ -46,7 +46,6 @@ class LPRCamera:
 
         placa = placa.replace("\x00", "")
         conf = self._read_register(6)
-        print(f"[LPR CAMERA] read registers: {regs}, placa='{placa}', conf={conf}")
         self._write_register(1, 0)
 
         return placa, conf

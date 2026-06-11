@@ -594,19 +594,31 @@ def main():
     running = threading.Event()
     running.set()
 
+    fd = sys.stdin.fileno() if sys.stdin.isatty() else None
+    old_term = termios.tcgetattr(fd) if fd is not None else None
+
     t = threading.Thread(target=_input_thread, args=(running,), daemon=True)
     t.start()
 
     console.clear()
-    with Live(
-        _build_layout(),
-        console=console,
-        refresh_per_second=int(1 / REFRESH_RATE),
-        screen=True,
-    ) as live:
-        while running.is_set():
-            live.update(_build_layout())
-            time.sleep(REFRESH_RATE)
+    try:
+        with Live(
+            _build_layout(),
+            console=console,
+            refresh_per_second=int(1 / REFRESH_RATE),
+            screen=True,
+        ) as live:
+            while running.is_set():
+                live.update(_build_layout())
+                time.sleep(REFRESH_RATE)
+    finally:
+        running.clear()
+        if fd is not None and old_term is not None:
+            try:
+                _disable_mouse()
+                termios.tcsetattr(fd, termios.TCSADRAIN, old_term)
+            except Exception:
+                pass
 
     console.clear()
     console.print("[bold green]Launcher encerrado.[/]")
