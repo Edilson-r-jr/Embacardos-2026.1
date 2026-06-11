@@ -10,7 +10,7 @@ class ViolationLogger:
     Salva em arquivo JSON para persistência
     """
     
-    LOG_FILE = "multas.json"
+    LOG_FILE = "logs/multas.json"
     
     def __init__(self):
         self.violations = []
@@ -39,6 +39,7 @@ class ViolationLogger:
     def save_to_file(self):
         """Salva violações em arquivo"""
         try:
+            os.makedirs("logs", exist_ok=True)
             with open(self.LOG_FILE, 'w') as f:
                 json.dump(self.violations, f, indent=2, default=str)
         except Exception as e:

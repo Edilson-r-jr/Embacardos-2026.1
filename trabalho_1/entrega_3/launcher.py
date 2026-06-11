@@ -28,8 +28,11 @@ LOG_FILES = {
     "dist2":   "logs/dist2.log",
 }
 
-MULTAS_FILE = "multas.json"
-CMD_FILE    = "central_cmd.json"
+MULTAS_FILE         = "logs/multas.json"
+SYSTEM_STATE_FILE   = "logs/system_state.json"
+CENTRAL_EVENTS_FILE = "logs/central_events.json"
+DIST_EVENTS_FILES   = {"dist1": "logs/dist1_events.json", "dist2": "logs/dist2_events.json"}
+CMD_FILE            = "central_cmd.json"
 
 LOG_COLORS = {
     "[CENTRAL]":   "bold cyan",
@@ -64,8 +67,7 @@ start_times:  dict[str, float]            = {}
 
 active_tab     = "central"
 status_msg     = ""
-scroll_offsets: dict[str, int] = {k: 0 for k in TABS}
-lock           = threading.Lock()
+lock = threading.Lock()
 force_mode     = False
 night_mode_on  = False
 
@@ -141,14 +143,6 @@ def _write_central_cmd(cmd: dict):
     except Exception:
         pass
 
-
-def _enable_mouse():
-    sys.stdout.write("\x1b[?1000h")
-    sys.stdout.flush()
-
-def _disable_mouse():
-    sys.stdout.write("\x1b[?1000l")
-    sys.stdout.flush()
 
 
 # ──────────────────────────────────────────────
@@ -318,40 +312,295 @@ def _build_tabs_header() -> Text:
     return t
 
 
-def _build_log_panel() -> Panel:
+def _read_json(path: str) -> dict | list | None:
+    try:
+        if os.path.exists(path):
+            with open(path, "r", encoding="utf-8") as f:
+                return json.load(f)
+    except Exception:
+        pass
+    return None
+
+
+def _fmt_ts(ts_raw) -> str:
+    try:
+        return datetime.fromisoformat(str(ts_raw)).strftime("%H:%M:%S")
+    except Exception:
+        return str(ts_raw)[:8]
+
+
+def _build_intersection_table() -> Table:
+    tbl = Table(box=box.SIMPLE_HEAD, show_header=True, header_style="bold cyan",
+                expand=True, padding=(0, 1))
+    tbl.add_column("CRZ",          style="bold cyan",   no_wrap=True, width=5)
+    tbl.add_column("Fluxo (v/min)", style="white",       )
+    tbl.add_column("Vel. Média",    style="bold yellow", )
+    tbl.add_column("Infrações",     style="bold red",    no_wrap=True, justify="right", width=10)
+    tbl.add_column("Multas",        style="green",       no_wrap=True, justify="right", width=14)
+
+    state   = _read_json(SYSTEM_STATE_FILE) or {}
+    multas  = _read_json(MULTAS_FILE) or []
+    inters  = state.get("intersections", {})
+
+    for iid_str in sorted(inters.keys(), key=int):
+        iid  = int(iid_str)
+        data = inters[iid_str]
+
+        rates  = data.get("vehicle_rate", {})
+        avg_sp = data.get("avg_speed",    {})
+
+        flux_parts = [f"S{sid}: {v:.1f}" for sid, v in sorted((int(k), v) for k, v in rates.items())]
+        avg_parts  = [f"S{sid}: {v:.1f}" for sid, v in sorted((int(k), v) for k, v in avg_sp.items())]
+
+        flux_str = "  ".join(flux_parts) if flux_parts else "—"
+        avg_str  = "  ".join(avg_parts)  if avg_parts  else "—"
+
+        viol = data.get("speed_violations", 0)
+        muls = [m for m in multas if m.get("intersection_id") == iid]
+        total_val = sum(m.get("fine_value", 0) for m in muls)
+        multas_str = f"{len(muls)}x  R$ {total_val:.2f}"
+
+        tbl.add_row(str(iid), flux_str, avg_str, str(viol), multas_str)
+
+    if not inters:
+        tbl.add_row("—", "aguardando dados...", "—", "—", "—")
+
+    return tbl
+
+
+def _build_lpr_push_table(visible: int) -> Table:
+    tbl = Table(box=box.SIMPLE_HEAD, show_header=True, header_style="bold cyan",
+                expand=True, padding=(0, 1))
+    tbl.add_column("Hora",   style="dim",         no_wrap=True, width=9)
+    tbl.add_column("Tipo",   style="bold",         no_wrap=True, width=6)
+    tbl.add_column("CRZ",    style="cyan",         no_wrap=True, width=4)
+    tbl.add_column("Sensor", style="dim",          no_wrap=True, width=7)
+    tbl.add_column("Info",   style="white",        )
+
+    events_data = _read_json(CENTRAL_EVENTS_FILE) or {}
+    lpr   = events_data.get("lpr_events",  [])
+    push  = events_data.get("push_events", [])
+
+    combined = []
+    for e in lpr:
+        combined.append(("LPR",  e.get("timestamp",""), e))
+    for e in push:
+        combined.append(("PUSH", e.get("timestamp",""), e))
+    combined.sort(key=lambda x: x[1])
+
+    shown = combined[-visible:]
+    for tipo, _, e in reversed(shown):
+        ts  = _fmt_ts(e.get("timestamp", ""))
+        iid = str(e.get("intersection_id", "—"))
+        sid = str(e.get("sensor_id", "—"))
+        if tipo == "LPR":
+            conf = e.get("confidence", 0)
+            conf_s = f"{conf*100:.0f}%" if isinstance(conf, float) else str(conf)
+            info = f"{e.get('plate','—')}  conf: {conf_s}"
+            color = "yellow"
+        else:
+            info  = f"{e.get('speed_kmh', 0):.1f} km/h"
+            color = "bold magenta"
+        tbl.add_row(ts, Text(tipo, style=color), iid, sid, info)
+
+    if not combined:
+        tbl.add_row("—", "—", "—", "—", "aguardando eventos...")
+
+    return tbl
+
+
+def _build_mode_section(visible: int) -> Table:
+    events_data = _read_json(CENTRAL_EVENTS_FILE) or {}
+    mode_events = events_data.get("mode_events", [])
+
+    tbl = Table(box=box.SIMPLE_HEAD, show_header=True, header_style="bold cyan",
+                expand=True, padding=(0, 1))
+    tbl.add_column("Hora",     style="dim",   no_wrap=True, width=9)
+    tbl.add_column("Tipo",     no_wrap=True,  width=12)
+    tbl.add_column("Estado",   style="white", no_wrap=True, width=10)
+    tbl.add_column("Fonte",    style="dim",   no_wrap=True, width=8)
+    tbl.add_column("Detalhes", style="dim")
+
+    shown = mode_events[-(visible - 2):]
+    for e in reversed(shown):
+        ts     = _fmt_ts(e.get("timestamp", ""))
+        etype  = e.get("type", "—")
+        source = e.get("source", "—")
+
+        if etype == "night_mode":
+            estado = "ON" if e.get("enabled") else "OFF"
+            color  = "bold magenta" if e.get("enabled") else "dim"
+            det    = ""
+        else:
+            estado = "ATIVA" if e.get("active") else "INATIVA"
+            color  = "bold red" if e.get("active") else "dim"
+            det_parts = []
+            if e.get("road") is not None:
+                det_parts.append(f"via:{e['road']}")
+            if e.get("signal_group") is not None:
+                det_parts.append(f"grp:{e['signal_group']}")
+            if e.get("intersection_id") is not None:
+                det_parts.append(f"crz:{e['intersection_id']}")
+            det = "  ".join(det_parts)
+
+        tbl.add_row(ts, Text(etype, style="bold"), Text(estado, style=color), source, det)
+
+    if not mode_events:
+        tbl.add_row("—", "—", "—", "—", "aguardando eventos...")
+
+    return tbl
+
+
+def _build_mode_title() -> str:
+    state    = _read_json(SYSTEM_STATE_FILE) or {}
+    night_on = state.get("night_mode",       False)
+    emerg_on = state.get("emergency_active", False)
+    night_s  = "[bold magenta]SIM[/]" if night_on else "NÃO"
+    emerg_s  = "[bold red]ATIVA[/]"   if emerg_on else "NÃO"
+    return f"[bold]Noturno & Emergência[/]  Noturno: {night_s}  Emergência: {emerg_s}"
+
+
+def _build_central_panel():
+    inner = Layout()
+    inner.split_column(
+        Layout(name="tabs",    size=1),
+        Layout(name="sections", ratio=1),
+    )
+    inner["tabs"].update(_build_tabs_header())
+
+    inner["sections"].split_column(
+        Layout(name="crz",  ratio=3),
+        Layout(name="lpr",  ratio=3),
+        Layout(name="modes", ratio=2),
+    )
+
+    visible = max(3, console.size.height - 20)
+    inner["sections"]["crz"].update(
+        Panel(_build_intersection_table(),
+              title="[bold]Cruzamentos[/]",
+              border_style="cyan", box=box.ROUNDED)
+    )
+    inner["sections"]["lpr"].update(
+        Panel(_build_lpr_push_table(visible),
+              title="[bold]LPR & Push[/]",
+              border_style="yellow", box=box.ROUNDED)
+    )
+    inner["sections"]["modes"].update(
+        Panel(_build_mode_section(visible),
+              title=_build_mode_title(),
+              border_style="magenta", box=box.ROUNDED)
+    )
+    return inner
+
+
+def _build_dist_messages_table(name: str, visible: int) -> Table:
+    tbl = Table(box=box.SIMPLE_HEAD, show_header=True, header_style="bold cyan",
+                expand=True, padding=(0, 1))
+    tbl.add_column("Hora",   style="dim",   no_wrap=True, width=9)
+    tbl.add_column("Tipo",   no_wrap=True,  width=16)
+    tbl.add_column("Sensor", style="dim",   no_wrap=True, width=7)
+    tbl.add_column("Valor",  style="white", no_wrap=True)
+
+    data  = _read_json(DIST_EVENTS_FILES[name]) or {}
+    msgs  = data.get("messages", [])
+    shown = msgs[-visible:]
+
+    TYPE_COLOR = {
+        "heartbeat":       "dim",
+        "vehicle_count":   "bold green",
+        "speed_violation": "bold red",
+    }
+    for e in reversed(shown):
+        ts    = _fmt_ts(e.get("timestamp", ""))
+        etype = e.get("type", "—")
+        sid   = str(e.get("sensor_id") or "—")
+        val   = e.get("value")
+        if etype == "speed_violation":
+            val_str = f"{val:.1f} km/h" if isinstance(val, (int, float)) else str(val or "—")
+        elif etype == "vehicle_count":
+            val_str = f"{val} veíc." if val is not None else "—"
+        else:
+            val_str = "—"
+        tbl.add_row(ts, Text(etype, style=TYPE_COLOR.get(etype, "dim")), sid, val_str)
+
+    if not msgs:
+        tbl.add_row("—", "aguardando mensagens...", "—", "—")
+    return tbl
+
+
+def _build_dist_commands_table(name: str, visible: int) -> Table:
+    tbl = Table(box=box.SIMPLE_HEAD, show_header=True, header_style="bold cyan",
+                expand=True, padding=(0, 1))
+    tbl.add_column("Hora",  style="dim",   no_wrap=True, width=9)
+    tbl.add_column("Tipo",  no_wrap=True,  width=16)
+    tbl.add_column("Dados", style="white", )
+
+    data  = _read_json(DIST_EVENTS_FILES[name]) or {}
+    cmds  = data.get("commands", [])
+    shown = cmds[-visible:]
+
+    CMD_COLOR = {
+        "night_mode":      "magenta",
+        "emergency":       "bold red",
+        "manual_override": "yellow",
+    }
+    for e in reversed(shown):
+        ts    = _fmt_ts(e.get("timestamp", ""))
+        etype = e.get("type", "—")
+        d     = e.get("data", {})
+        parts = [f"{k}:{v}" for k, v in d.items() if v is not None]
+        tbl.add_row(ts, Text(etype, style=CMD_COLOR.get(etype, "dim")), "  ".join(parts) or "—")
+
+    if not cmds:
+        tbl.add_row("—", "aguardando comandos...", "—")
+    return tbl
+
+
+def _build_dist_panel(name: str):
+    label = "Distribuído 1" if name == "dist1" else "Distribuído 2"
+    border = "green" if name == "dist1" else "blue"
+    visible = max(3, (console.size.height - 18) // 2)
+
+    inner = Layout()
+    inner.split_column(
+        Layout(name="tabs",    size=1),
+        Layout(name="sections", ratio=1),
+    )
+    inner["tabs"].update(_build_tabs_header())
+    inner["sections"].split_column(
+        Layout(name="msgs", ratio=1),
+        Layout(name="cmds", ratio=1),
+    )
+    inner["sections"]["msgs"].update(
+        Panel(_build_dist_messages_table(name, visible),
+              title=f"[bold]{label} — Mensagens Enviadas[/]",
+              border_style=border, box=box.ROUNDED)
+    )
+    inner["sections"]["cmds"].update(
+        Panel(_build_dist_commands_table(name, visible),
+              title=f"[bold]{label} — Comandos Recebidos[/]",
+              border_style="yellow", box=box.ROUNDED)
+    )
+    return inner
+
+
+def _build_log_panel():
     if active_tab == "multas":
         return _build_multas_panel()
+    if active_tab == "central":
+        return _build_central_panel()
+    if active_tab in ("dist1", "dist2"):
+        return _build_dist_panel(active_tab)
 
+    # fallback (nunca deve chegar aqui com os tabs atuais)
     visible = _get_visible_lines()
     with lock:
         all_lines = list(log_buffers[active_tab])
-        offset = scroll_offsets[active_tab]
-
-    n = len(all_lines)
-
-    # corrige offset caso o terminal tenha sido redimensionado
-    max_offset = max(0, n - visible)
-    if offset > max_offset:
-        offset = max_offset
-        with lock:
-            scroll_offsets[active_tab] = offset
-
-    if offset == 0:
-        lines = all_lines[-visible:]
-    else:
-        end   = max(0, n - offset)
-        start = max(0, end - visible)
-        lines = all_lines[start:end]
-
-    sub_info = f"  {n} linhas"
-    if offset > 0:
-        sub_info += f"  ↑ {offset} acima do fim"
-    sub_info += "  "
-
+    lines = all_lines[-visible:]
     return Panel(
         _build_log_table(lines),
         title=_build_tabs_header(),
-        subtitle=Text(sub_info, style="dim"),
+        subtitle=Text(f"  {len(all_lines)} linhas  ", style="dim"),
         border_style="bright_black",
         box=box.ROUNDED,
     )
@@ -432,7 +681,7 @@ def _build_bottom_bar() -> Text:
     if status_msg:
         t.append(status_msg, style="yellow")
     else:
-        t.append("scroll: roda do mouse", style="dim")
+        t.append("pronto", style="dim")
     return t
 
 
@@ -494,17 +743,6 @@ def _handle_key(key: str) -> bool:
     if key in TAB_KEYS:
         active_tab = TAB_KEYS[key]
         _set_status(f"aba: {active_tab}")
-    elif key == "scroll_up":
-        if active_tab != "multas":
-            with lock:
-                buf     = log_buffers[active_tab]
-                visible = _get_visible_lines()
-                max_off = max(0, len(buf) - visible)
-                scroll_offsets[active_tab] = min(scroll_offsets[active_tab] + 3, max_off)
-    elif key == "scroll_down":
-        if active_tab != "multas":
-            with lock:
-                scroll_offsets[active_tab] = max(0, scroll_offsets[active_tab] - 3)
     elif key == "1":  start_central()
     elif key == "2":  start_dist1()
     elif key == "3":  start_dist2()
@@ -522,16 +760,7 @@ def _handle_key(key: str) -> bool:
     return True
 
 
-def _drain(n: int, timeout: float = 0.15):
-    """Descarta n bytes do stdin com timeout por byte."""
-    for _ in range(n):
-        if not select.select([sys.stdin], [], [], timeout)[0]:
-            break
-        sys.stdin.read(1)
-
-
 def _read_key() -> str:
-    """Lê uma tecla ou evento de mouse em modo raw."""
     ch = sys.stdin.read(1)
     if not ch:
         return ""
@@ -541,22 +770,10 @@ def _read_key() -> str:
         ch2 = sys.stdin.read(1)
         if ch2 != "[":
             return "esc"
-        if not select.select([sys.stdin], [], [], 0.1)[0]:
-            return "esc"
-        ch3 = sys.stdin.read(1)
-        if ch3 == "M":
-            try:
-                if not select.select([sys.stdin], [], [], 0.15)[0]:
-                    return "mouse"
-                b = ord(sys.stdin.read(1)) - 32
-                _drain(2)  # descarta x e y
-                if b == 64: return "scroll_up"
-                if b == 65: return "scroll_down"
-            except Exception:
-                pass
-            return "mouse"
-        # sequência desconhecida — bytes já consumidos, ignora
-        return "esc"
+        # drena todos os bytes restantes da sequência antes de retornar
+        while select.select([sys.stdin], [], [], 0.05)[0]:
+            sys.stdin.read(1)
+        return ""
     return ch.lower()
 
 
@@ -575,7 +792,6 @@ def _input_thread(running: threading.Event):
     old = termios.tcgetattr(fd)
     try:
         tty.setcbreak(fd)
-        _enable_mouse()
         while running.is_set():
             ready = select.select([sys.stdin], [], [], 0.1)[0]
             if ready:
@@ -586,7 +802,6 @@ def _input_thread(running: threading.Event):
                 if key and not _handle_key(key):
                     running.clear()
     finally:
-        _disable_mouse()
         termios.tcsetattr(fd, termios.TCSADRAIN, old)
 
 
@@ -615,7 +830,6 @@ def main():
         running.clear()
         if fd is not None and old_term is not None:
             try:
-                _disable_mouse()
                 termios.tcsetattr(fd, termios.TCSADRAIN, old_term)
             except Exception:
                 pass

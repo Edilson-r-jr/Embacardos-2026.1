@@ -11,6 +11,7 @@ from common.messages import (
 )
 
 from distributed.constants import SPEED_VIOLATION_LIMIT
+from distributed.events_logger import DistEventLogger
 
 
 class TCPClient(threading.Thread):
@@ -37,6 +38,7 @@ class TCPClient(threading.Thread):
         self.speed_sensors = {}  # {sensor_id: SpeedSensorReader}
         self.running = True
         self.sensor_polling_thread = None
+        self.events_logger = DistEventLogger(intersection_id)
 
     def set_speed_sensors(self, sensors):
         """Define os sensores de velocidade para leitura"""
@@ -138,21 +140,20 @@ class TCPClient(threading.Thread):
                 enabled = cmd.get("enabled", False)
                 if self.traffic_state_machine:
                     self.traffic_state_machine.set_night_mode(enabled)
-                    print(f"[DIST {self.intersection_id}] Modo noturno: {enabled}")
-            
+                self.events_logger.add_command("night_mode", {"enabled": enabled})
+
             elif cmd_type == "emergency":
-                active = cmd.get("active", False)
+                active       = cmd.get("active", False)
                 signal_group = cmd.get("signal_group", 0)
                 if self.traffic_state_machine:
                     self.traffic_state_machine.set_emergency(active, signal_group)
-                    print(f"[DIST {self.intersection_id}] Emergência: {active}, grupo: {signal_group}")
+                self.events_logger.add_command("emergency", {"active": active, "signal_group": signal_group})
 
             elif cmd_type == "manual_override":
                 state_code = cmd.get("state_code")
                 if self.traffic_state_machine:
                     self.traffic_state_machine.set_manual_override(state_code)
-                    label = "retomar normal" if state_code is None else f"código={state_code}"
-                    print(f"[DIST {self.intersection_id}] Controle manual: {label}")
+                self.events_logger.add_command("manual_override", {"state_code": state_code})
             
         except Exception as e:
             print(f"[DIST {self.intersection_id}] Erro ao processar comando: {e}")
@@ -182,6 +183,7 @@ class TCPClient(threading.Thread):
                 # Heartbeat
                 if now - last_heartbeat >= 2:
                     self.send_message(create_heartbeat(self.intersection_id))
+                    self.events_logger.add_message("heartbeat")
                     last_heartbeat = now
 
                 # Leitura de velocidade e infrações reais
@@ -189,13 +191,11 @@ class TCPClient(threading.Thread):
                     for sensor_id, sensor in self.speed_sensors.items():
                         speed = sensor.pop_last_speed()
                         if speed is not None and speed > SPEED_VIOLATION_LIMIT:
+                            spd = round(speed, 1)
                             self.send_message(
-                                create_speed_violation(
-                                    self.intersection_id,
-                                    sensor_id,
-                                    round(speed, 1)
-                                )
+                                create_speed_violation(self.intersection_id, sensor_id, spd)
                             )
+                            self.events_logger.add_message("speed_violation", sensor_id, spd)
 
                 # Contagem de veículos (envia cumulativo)
                 if now - last_count_update >= 2:
@@ -204,12 +204,9 @@ class TCPClient(threading.Thread):
                             count = sensor.get_vehicle_count()
                             if count > 0:
                                 self.send_message(
-                                    create_vehicle_count(
-                                        self.intersection_id,
-                                        sensor_id,
-                                        count
-                                    )
+                                    create_vehicle_count(self.intersection_id, sensor_id, count)
                                 )
+                                self.events_logger.add_message("vehicle_count", sensor_id, count)
                     else:
                         # Simulação (fallback) — usa IDs corretos por cruzamento
                         self.sensor_1_count += random.randint(1, 5)
@@ -221,9 +218,11 @@ class TCPClient(threading.Thread):
                         self.send_message(
                             create_vehicle_count(self.intersection_id, sid_a, self.sensor_1_count)
                         )
+                        self.events_logger.add_message("vehicle_count", sid_a, self.sensor_1_count)
                         self.send_message(
                             create_vehicle_count(self.intersection_id, sid_b, self.sensor_2_count)
                         )
+                        self.events_logger.add_message("vehicle_count", sid_b, self.sensor_2_count)
                     last_count_update = now
 
                 # Simulação de infração apenas se não há sensores reais disponíveis
@@ -233,6 +232,7 @@ class TCPClient(threading.Thread):
                     self.send_message(
                         create_speed_violation(self.intersection_id, sensor, speed)
                     )
+                    self.events_logger.add_message("speed_violation", sensor, speed)
 
                 time.sleep(0.5)
 

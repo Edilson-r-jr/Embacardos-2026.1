@@ -20,6 +20,7 @@ class IntersectionState:
         self.speed_violations = 0
 
         self.last_speed = {}
+        self.avg_speed  = {}   # velocidade média das infrações por sensor
 
     def heartbeat(self):
 
@@ -62,6 +63,10 @@ class IntersectionState:
 
         self.speed_violations += 1
         self.last_speed[sensor_id] = speed
+
+        prev = self.avg_speed.get(sensor_id, 0.0)
+        n = self.speed_violations
+        self.avg_speed[sensor_id] = prev + (speed - prev) / n
 
     def seconds_since_heartbeat(self):
 

@@ -9,7 +9,7 @@ from central.state.intersection_state import (
 
 class StateManager:
 
-    STATE_FILE = "system_state.json"
+    STATE_FILE = "logs/system_state.json"
 
     def __init__(self, violation_callback=None):
 
@@ -76,6 +76,8 @@ class StateManager:
             "intersections": {
                 intersection_id: {
                     "vehicle_count": intersection.vehicle_count,
+                    "vehicle_rate": intersection.vehicle_rate,
+                    "avg_speed": intersection.avg_speed,
                     "speed_violations": intersection.speed_violations,
                     "last_speed": intersection.last_speed
                 }
@@ -84,6 +86,7 @@ class StateManager:
         }
 
         try:
+            os.makedirs("logs", exist_ok=True)
             with open(self.STATE_FILE, "w", encoding="utf-8") as file:
                 json.dump(data, file, indent=2)
         except Exception as error:

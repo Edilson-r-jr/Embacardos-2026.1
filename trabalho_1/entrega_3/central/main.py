@@ -11,6 +11,7 @@ from central.state.state_manager import StateManager
 from central.modbus.emergency_reader import EmergencyReader
 from central.modbus.lpr_camera import LPRCamera
 from central.violations_logger import ViolationLogger
+from central.events_logger import EventsLogger
 from central.constants import (
     SENSOR_TO_CAMERA, SPEED_VIOLATION_LIMIT, FINE_VALUE, UART_PORT
 )
@@ -28,6 +29,7 @@ class CentralManager:
         self.server = None
         self.emergency_reader = None
         self.violations_logger = ViolationLogger()
+        self.events_logger = EventsLogger()
         self.lpr_cameras = {}
         
         # Estado de emergência
@@ -101,13 +103,8 @@ class CentralManager:
         print("[CENTRAL] Sistema iniciado")
     
     def handle_speed_violation(self, intersection_id, sensor_id, speed_kmh):
-        print(
-            f"[PUSH] Infração | "
-            f"CRZ-{intersection_id} sensor:{sensor_id} "
-            f"vel:{speed_kmh:.1f} km/h"
-        )
-        
-        # Dispara câmera LPR correspondente
+        self.events_logger.add_push_event(intersection_id, sensor_id, speed_kmh)
+
         if sensor_id in SENSOR_TO_CAMERA:
             self.trigger_lpr_camera(intersection_id, sensor_id, speed_kmh)
     
@@ -117,8 +114,6 @@ class CentralManager:
 
         camera = self.lpr_cameras[sensor_id]
 
-        print(f"[LPR] Disparando câmera para sensor {sensor_id}...")
-
         with self.modbus_lock:
             plate, confidence = camera.trigger_capture()
 
@@ -126,7 +121,7 @@ class CentralManager:
             timestamp = datetime.now().isoformat()
             camera_addr = SENSOR_TO_CAMERA[sensor_id]
 
-            print(f"[LPR] Placa capturada: {plate} (confiança: {confidence}%)")
+            self.events_logger.add_lpr_event(intersection_id, sensor_id, plate, confidence)
 
             self.violations_logger.add_violation(
                 timestamp=timestamp,
@@ -147,7 +142,12 @@ class CentralManager:
 
         # Emergência iniciou
         if active and not self.last_emergency_state:
-            print("[EMERGENCY] Emergência ativada")
+            self.events_logger.add_mode_event(
+                "emergency", source="modbus", active=True,
+                road=emergency_state.get("road"),
+                signal_group=emergency_state.get("signal_group"),
+                intersection_id=emergency_state.get("intersection_id"),
+            )
             self.send_emergency_command(emergency_state)
             self.state_manager.set_emergency_active(True)
             self.state_manager.set_emergency_state(emergency_state)
@@ -155,7 +155,7 @@ class CentralManager:
 
         # Emergência terminou
         elif not active and self.last_emergency_state:
-            print("[EMERGENCY] Emergência finalizada")
+            self.events_logger.add_mode_event("emergency", source="modbus", active=False)
             self.clear_emergency_command()
             self.state_manager.set_emergency_active(False)
             self.state_manager.set_emergency_state(emergency_state)
@@ -203,7 +203,7 @@ class CentralManager:
             self.night_mode_active = night_mode
             self.state_manager.set_night_mode(night_mode)
 
-            print(f"[NIGHT MODE] {'Ativado' if night_mode else 'Desativado'}")
+            self.events_logger.add_mode_event("night_mode", source="modbus", enabled=night_mode)
 
             if self.server:
                 command = {
@@ -229,37 +229,6 @@ class CentralManager:
 
             time.sleep(0.5)
     
-    def dashboard_loop(self):
-        while True:
-            try:
-                snapshot = self.state_manager.get_snapshot()
-
-                for iid, intersection in snapshot.items():
-                    sensors = "  ".join(
-                        f"S{sid}={intersection.vehicle_rate.get(sid, 0):.1f}/min"
-                        for sid in sorted(intersection.vehicle_count)
-                    ) if intersection.vehicle_count else "sem dados"
-
-                    violations = self.violations_logger.get_violations_by_intersection(iid)
-                    total      = self.violations_logger.get_total_fine_value_by_intersection(iid)
-                    fines_str  = f"R${total:.2f}" if total > 0 else "R$0,00"
-
-                    print(
-                        f"[DIST {iid}] CRZ-{iid} | "
-                        f"veículos:{sensors} | "
-                        f"infrações:{intersection.speed_violations} "
-                        f"multas:{len(violations)} {fines_str}"
-                    )
-                    print("")
-
-                night = "SIM" if self.night_mode_active else "NÃO"
-                emerg = "ATIVA" if self.last_emergency_state else "NÃO"
-                print(f"[CENTRAL] sistema | noturno:{night} | emergência:{emerg}")
-
-            except Exception as e:
-                print(f"[CENTRAL] Erro no dashboard: {e}")
-
-            time.sleep(5)
     def clear_emergency_command(self): #clear_emergency_command encerrar o modo de emergência em todos os cruzamentos"""
         if not self.server:
             return
@@ -293,10 +262,9 @@ class CentralManager:
         if cmd_type == "night_mode":
             enabled = cmd.get("enabled", False)
             self.night_mode_active = enabled
-            # Ao ligar manualmente, bloqueia o MODBUS; ao desligar, libera
             self.night_mode_manual_override = enabled
             self.state_manager.set_night_mode(enabled)
-            print(f"[NIGHT MODE] {'Ativado' if enabled else 'Desativado'} (manual)")
+            self.events_logger.add_mode_event("night_mode", source="manual", enabled=enabled)
             if self.server:
                 command = {"type": "night_mode", "enabled": enabled}
                 self.server.send_command_to_intersection(1, command)
@@ -305,8 +273,6 @@ class CentralManager:
         elif cmd_type == "manual_override":
             iid        = cmd.get("intersection_id")
             state_code = cmd.get("state_code")
-            label      = "retomar normal" if state_code is None else f"código={state_code}"
-            print(f"[CENTRAL] controle manual CRZ-{iid}: {label}")
             if self.server and iid:
                 self.server.send_command_to_intersection(
                     iid, {"type": "manual_override", "state_code": state_code}
@@ -315,15 +281,13 @@ class CentralManager:
     def run(self):
         """Executa o sistema central"""
         self.initialize()
-        
-        # Inicia thread de polling de emergência
-        threading.Thread(target=self.polling_emergency, daemon=True).start()
 
-        # Inicia thread de polling de comandos manuais
+        threading.Thread(target=self.polling_emergency, daemon=True).start()
         threading.Thread(target=self._poll_commands, daemon=True).start()
 
-        # Inicia dashboard
-        self.dashboard_loop()
+        # Mantém o processo vivo
+        while True:
+            time.sleep(1)
     
     def shutdown(self):
         """Desliga o sistema"""
