@@ -294,8 +294,6 @@ class CentralManager:
         if self.emergency_reader:
             self.emergency_reader.stop()
         
-        for camera in self.lpr_cameras.values():
-            camera.close()
 
 
 def main():
